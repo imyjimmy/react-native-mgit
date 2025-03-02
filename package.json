@@ -1,0 +1,22 @@
+{
+  "name": "react-native-mgit",
+  "version": "0.1.0",
+  "description": "React Native bridge for libgit2 and mgit operations",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "react-native",
+    "ios",
+    "git",
+    "mgit",
+    "libgit2"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*"
+  }
+}
