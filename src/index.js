@@ -33,7 +33,38 @@ class MGit {
    * @returns {Promise<Object>} - Resolves with success information
    */
   static commit(repositoryPath, message, options = {}) {
+    // If nostrPubkey is provided, use MGit commit functionality
+    if (options.nostrPubkey) {
+      return MGitModule.createMCommit(
+        repositoryPath,
+        message,
+        options.authorName || options.author || '',
+        options.authorEmail || options.email || '',
+        options.nostrPubkey
+      );
+    }
+
     return MGitModule.commit(repositoryPath, message, options);
+  }
+
+  /**
+   * Create an MGit commit with a Nostr pubkey
+   * @param {string} repositoryPath - Path to local repository
+   * @param {string} message - Commit message
+   * @param {Object} options - Commit options
+   * @param {string} options.authorName - Author name
+   * @param {string} options.authorEmail - Author email
+   * @param {string} options.nostrPubkey - Nostr public key
+   * @returns {Promise<Object>} - Resolves with commit information including both git and mgit hashes
+   */
+  static createMCommit(repositoryPath, message, options = {}) {
+    return MGitModule.createMCommit(
+      repositoryPath, 
+      message,
+      options.authorName || '',
+      options.authorEmail || '',
+      options.nostrPubkey || ''
+    );
   }
 
   /**
