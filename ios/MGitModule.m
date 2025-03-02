@@ -773,10 +773,6 @@ RCT_EXPORT_METHOD(createMCommit:(NSString *)repositoryPath
     [jsonData writeToFile:nostrMappingsFile atomically:YES];
 }
 
-/* 
-* MGit Tests
-*/
-
 // Test method to compare mcommit hash generation with mgit executable
 RCT_EXPORT_METHOD(testMCommitHash:(NSString *)repositoryPath
                   commitHash:(NSString *)commitHash
@@ -804,13 +800,10 @@ RCT_EXPORT_METHOD(testMCommitHash:(NSString *)repositoryPath
   
   // Get parent MGit hashes
   // For this test, we'll use an empty array for simplicity
-  // In a real implementation, you'd look these up from the mappings
   NSArray<NSString *> *parentMGitHashes = @[];
   
   // Calculate MGit hash using our method
-  NSString *mgitHash = [self calculateMCommitHash:commit
-                                   parentMGitHashes:parentMGitHashes
-                                   pubkey:nostrPubkey];
+  NSString *mgitHash = [self calculateMCommitHash:commit parentMGitHashes:parentMGitHashes pubkey:nostrPubkey];
   
   // Now run mgit show to get the hash from the mgit executable
   NSTask *task = [[NSTask alloc] init];
@@ -834,7 +827,6 @@ RCT_EXPORT_METHOD(testMCommitHash:(NSString *)repositoryPath
     mgitOutput = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     
     // Extract the MGit hash from the output
-    // This depends on the format of mgit show output
     // Example: "commit <mgit_hash>\n"
     NSArray *lines = [mgitOutput componentsSeparatedByString:@"\n"];
     if (lines.count > 0) {
