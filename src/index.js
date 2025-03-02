@@ -94,6 +94,17 @@ class MGit {
   static onError(callback) {
     return MGitEventEmitter.addListener('MGitError', callback);
   }
+
+  /**
+   * Test MGit hash generation
+   * @param {string} repositoryPath - Path to local repository
+   * @param {string} commitHash - Commit hash to test
+   * @param {string} nostrPubkey - Nostr public key to use for hash generation
+   * @returns {Promise<Object>} - Resolves with comparison results
+   */
+  static testMCommitHash(repositoryPath, commitHash, nostrPubkey) {
+    return MGitModule.testMCommitHash(repositoryPath, commitHash, nostrPubkey);
+  }
 }
 
 export default MGit;
