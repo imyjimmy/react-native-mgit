@@ -188,42 +188,165 @@ RCT_EXPORT_METHOD(commit:(NSString *)repositoryPath
               rejecter:reject];
     return;
   }
-
-  NSTask *task = [[NSTask alloc] init];
-  [task setCurrentDirectoryPath:repositoryPath];
-  [task setLaunchPath:@"/usr/bin/git"];
   
-  NSMutableArray *args = [NSMutableArray arrayWithObjects:@"commit", @"-m", message, nil];
-  
-  // Handle author if provided
-  if (options[@"authorName"] && options[@"authorEmail"]) {
-    NSString *author = [NSString stringWithFormat:@"%@<%@>", 
-                        options[@"authorName"], 
-                        options[@"authorEmail"]];
-    [args addObject:@"--author"];
-    [args addObject:author];
-  }
-  
-  [task setArguments:args];
-  
-  NSPipe *pipe = [NSPipe pipe];
-  [task setStandardOutput:pipe];
-  [task setStandardError:pipe];
-  
-  NSError *error;
-  [task launchAndReturnError:&error];
-  
-  if (error) {
-    reject(@"COMMIT_ERROR", @"Failed to commit changes", error);
+  // Create git repository object
+  git_repository *repo = NULL;
+  int error = git_repository_open(&repo, [repositoryPath UTF8String]);
+  if (error < 0) {
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
     return;
   }
   
-  NSFileHandle *file = [pipe fileHandleForReading];
-  NSData *data = [file readDataToEndOfFile];
-  NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  // Create signature for author and committer
+  git_signature *author = NULL;
+  git_signature *committer = NULL;
+  time_t currentTime = time(NULL);
   
+  // Create signature using current time
+  error = git_signature_new(&author, 
+                           [authorName UTF8String] ?: "Git User", 
+                           [authorEmail UTF8String] ?: "git@example.com", 
+                           currentTime, 
+                           0); // Offset from UTC in minutes
+  
+  if (error < 0) {
+    git_repository_free(repo);
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
+  
+  // Use same signature for committer
+  error = git_signature_dup(&committer, author);
+  if (error < 0) {
+    git_signature_free(author);
+    git_repository_free(repo);
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
+  
+  // Get the index (staging area)
+  git_index *index = NULL;
+  error = git_repository_index(&index, repo);
+  if (error < 0) {
+    git_signature_free(author);
+    git_signature_free(committer);
+    git_repository_free(repo);
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
+  
+  // Write the index tree
+  git_oid tree_id;
+  error = git_index_write_tree(&tree_id, index);
+  if (error < 0) {
+    git_index_free(index);
+    git_signature_free(author);
+    git_signature_free(committer);
+    git_repository_free(repo);
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
+  
+  // Get the tree object
+  git_tree *tree = NULL;
+  error = git_tree_lookup(&tree, repo, &tree_id);
+  if (error < 0) {
+    git_index_free(index);
+    git_signature_free(author);
+    git_signature_free(committer);
+    git_repository_free(repo);
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
+  
+  // Get the parent commits
+  git_reference *head_ref = NULL;
+  error = git_repository_head(&head_ref, repo);
+  
+  git_oid commit_id;
+  
+  if (error == 0) {
+    // We have a HEAD reference
+    const git_oid *head_oid = git_reference_target(head_ref);
+    git_commit *parent = NULL;
+    error = git_commit_lookup(&parent, repo, head_oid);
+    
+    if (error == 0) {
+      // Create the commit with parent
+      error = git_commit_create(&commit_id, 
+                              repo, 
+                              "HEAD", 
+                              author, 
+                              committer, 
+                              "UTF-8", 
+                              [message UTF8String], 
+                              tree, 
+                              1, 
+                              (const git_commit **)&parent);
+      
+      git_commit_free(parent);
+    } else {
+      // No parent commit (first commit in repo)
+      error = git_commit_create(&commit_id, 
+                              repo, 
+                              "HEAD", 
+                              author, 
+                              committer, 
+                              "UTF-8", 
+                              [message UTF8String], 
+                              tree, 
+                              0, 
+                              NULL);
+    }
+  } else {
+    // No HEAD yet (empty repository)
+    error = git_commit_create(&commit_id, 
+                            repo, 
+                            "HEAD", 
+                            author, 
+                            committer, 
+                            "UTF-8", 
+                            [message UTF8String], 
+                            tree, 
+                            0, 
+                            NULL);
+  }
+  
+  if (error < 0) {
+    if (head_ref) git_reference_free(head_ref);
+    git_tree_free(tree);
+    git_index_free(index);
+    git_signature_free(author);
+    git_signature_free(committer);
+    git_repository_free(repo);
+    
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
+  
+  // Get hash as string
+  char hash_string[GIT_OID_HEXSZ + 1] = {0};
+  git_oid_fmt(hash_string, &commit_id);
+  NSString *commitHash = [NSString stringWithUTF8String:hash_string];
+  
+  // Clean up resources
+  if (head_ref) git_reference_free(head_ref);
+  git_tree_free(tree);
+  git_index_free(index);
+  git_signature_free(author);
+  git_signature_free(committer);
+  git_repository_free(repo);
+  
+  // Resolve with success and hash information
   resolve(@{
-    @"output": output,
+    @"hash": commitHash,
     @"success": @YES
   });
 }
