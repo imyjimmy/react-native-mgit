@@ -1124,6 +1124,286 @@ RCT_EXPORT_METHOD(mgitClone:(NSString *)url
     }];
 }
 
+// MGit push implementation - pushes both Git changes and MGit metadata
+RCT_EXPORT_METHOD(mgitPush:(NSString *)repositoryPath
+                  remoteName:(NSString *)remoteName
+                  refspec:(NSString *)refspec
+                  token:(NSString *)token
+                  options:(NSDictionary *)options
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    // Check parameters
+    if (!repositoryPath) {
+        reject(@"INVALID_PARAMS", @"Repository path is required", nil);
+        return;
+    }
+    
+    if (!remoteName || [remoteName length] == 0) {
+        remoteName = @"origin"; // Default remote name
+    }
+    
+    if (!refspec || [refspec length] == 0) {
+        refspec = @"HEAD"; // Default to pushing HEAD
+    }
+    
+    // Set up progress tracking
+    [self sendEventWithName:@"MGitProgress" body:@{
+        @"stage": @"push",
+        @"message": @"Preparing to push changes..."
+    }];
+    
+    // Open the repository
+    git_repository *repo = NULL;
+    int error = git_repository_open(&repo, [repositoryPath UTF8String]);
+    if (error != 0) {
+        NSError *gitError = [self errorFromGitResult:error];
+        reject(@"PUSH_ERROR", @"Failed to open repository", gitError);
+        return;
+    }
+    
+    // Lookup the remote
+    git_remote *remote = NULL;
+    error = git_remote_lookup(&remote, repo, [remoteName UTF8String]);
+    if (error != 0) {
+        git_repository_free(repo);
+        NSError *gitError = [self errorFromGitResult:error];
+        reject(@"PUSH_ERROR", @"Failed to lookup remote", gitError);
+        return;
+    }
+    
+    // Setup push options
+    git_push_options push_opts = GIT_PUSH_OPTIONS_INIT;
+    git_push_options_init(&push_opts, GIT_PUSH_OPTIONS_VERSION);
+    
+    // Configure authentication with token if provided
+    if (token && [token length] > 0) {
+        // Add HTTP header for token authentication
+        git_strarray custom_headers = {0};
+        char *header = NULL;
+        
+        NSString *authHeader = [NSString stringWithFormat:@"Authorization: Bearer %@", token];
+        header = strdup([authHeader UTF8String]);
+        
+        char *headers[1] = { header };
+        custom_headers.strings = headers;
+        custom_headers.count = 1;
+        
+        push_opts.headers = custom_headers;
+    }
+    
+    // Set up progress callback
+    push_opts.callbacks.transfer_progress = ^int(unsigned int current, unsigned int total, size_t bytes, void *payload) {
+        [self sendEventWithName:@"MGitProgress" body:@{
+            @"stage": @"upload",
+            @"current": @(current),
+            @"total": @(total),
+            @"bytes": @(bytes)
+        }];
+        return 0;
+    };
+    
+    // Configure the references to push
+    git_strarray refspecs = {0};
+    char *refspecStr = strdup([refspec UTF8String]);
+    char *refspecsArray[1] = { refspecStr };
+    refspecs.strings = refspecsArray;
+    refspecs.count = 1;
+    
+    // Perform the push
+    [self sendEventWithName:@"MGitProgress" body:@{
+        @"stage": @"push",
+        @"message": @"Pushing changes to remote..."
+    }];
+    
+    error = git_remote_push(remote, &refspecs, &push_opts);
+    
+    // Clean up custom headers if used
+    if (token && [token length] > 0) {
+        free(push_opts.headers.strings[0]);
+    }
+    
+    // Clean up refspecs
+    free(refspecStr);
+    
+    // Handle push result
+    if (error != 0) {
+        git_remote_free(remote);
+        git_repository_free(repo);
+        NSError *gitError = [self errorFromGitResult:error];
+        reject(@"PUSH_ERROR", @"Failed to push changes", gitError);
+        return;
+    }
+    
+    // Step 2: Push MGit metadata if available
+    [self sendEventWithName:@"MGitProgress" body:@{
+        @"stage": @"metadata",
+        @"message": @"Pushing MGit metadata..."
+    }];
+    
+    // Check if we have MGit metadata to push
+    NSString *mgitDir = [repositoryPath stringByAppendingPathComponent:@".mgit"];
+    BOOL hasMgitMetadata = [[NSFileManager defaultManager] fileExistsAtPath:mgitDir];
+    
+    if (hasMgitMetadata) {
+        // Get remote URL information
+        const char *remoteUrl = git_remote_url(remote);
+        if (!remoteUrl) {
+            // Clean up and return success with warning
+            git_remote_free(remote);
+            git_repository_free(repo);
+            
+            NSLog(@"Warning: Could not get remote URL for pushing MGit metadata");
+            resolve(@{
+                @"success": @YES,
+                @"gitPushSuccess": @YES,
+                @"metadataPushSuccess": @NO,
+                @"warning": @"Could not push MGit metadata - remote URL not available"
+            });
+            return;
+        }
+        
+        NSString *remoteUrlStr = [NSString stringWithUTF8String:remoteUrl];
+        
+        // Parse remote URL to extract server base URL and repo ID
+        NSString *serverBaseURL = [self extractServerBaseURLFromURL:remoteUrlStr];
+        NSString *repoId = [self extractRepoIdFromURL:remoteUrlStr];
+        
+        if (!serverBaseURL || !repoId) {
+            // Clean up and return success with warning
+            git_remote_free(remote);
+            git_repository_free(repo);
+            
+            NSLog(@"Warning: Could not parse remote URL for pushing MGit metadata");
+            resolve(@{
+                @"success": @YES,
+                @"gitPushSuccess": @YES,
+                @"metadataPushSuccess": @NO,
+                @"warning": @"Could not push MGit metadata - invalid remote URL format"
+            });
+            return;
+        }
+        
+        // Push the MGit metadata to the server
+        [self pushMGitMetadata:repositoryPath 
+                 serverBaseURL:serverBaseURL 
+                        repoId:repoId 
+                         token:token 
+                    completion:^(BOOL success, NSError *error) {
+            git_remote_free(remote);
+            git_repository_free(repo);
+            
+            if (!success) {
+                NSLog(@"Warning: Failed to push MGit metadata: %@", error);
+                resolve(@{
+                    @"success": @YES,
+                    @"gitPushSuccess": @YES,
+                    @"metadataPushSuccess": @NO,
+                    @"warning": [NSString stringWithFormat:@"Git push succeeded but MGit metadata push failed: %@", error.localizedDescription]
+                });
+                return;
+            }
+            
+            // Both Git and MGit metadata push succeeded
+            [self sendEventWithName:@"MGitProgress" body:@{
+                @"stage": @"complete",
+                @"message": @"Push completed successfully"
+            }];
+            
+            resolve(@{
+                @"success": @YES,
+                @"gitPushSuccess": @YES,
+                @"metadataPushSuccess": @YES
+            });
+        }];
+    } else {
+        // No MGit metadata, just return success for Git push
+        git_remote_free(remote);
+        git_repository_free(repo);
+        
+        [self sendEventWithName:@"MGitProgress" body:@{
+            @"stage": @"complete",
+            @"message": @"Push completed successfully (no MGit metadata)"
+        }];
+        
+        resolve(@{
+            @"success": @YES,
+            @"gitPushSuccess": @YES,
+            @"metadataPushSuccess": @NO,
+            @"warning": @"No MGit metadata to push"
+        });
+    }
+}
+
+// Push MGit metadata to the server
+- (void)pushMGitMetadata:(NSString *)repositoryPath
+           serverBaseURL:(NSString *)serverBaseURL
+                  repoId:(NSString *)repoId
+                   token:(NSString *)token
+              completion:(void (^)(BOOL success, NSError *error))completion {
+    // Get the MGit metadata files
+    NSString *mappingsPath = [repositoryPath stringByAppendingPathComponent:@".mgit/mappings/hash_mappings.json"];
+    
+    // Check if mappings file exists
+    if (![[NSFileManager defaultManager] fileExistsAtPath:mappingsPath]) {
+        NSError *error = [NSError errorWithDomain:@"MGitErrorDomain"
+                                            code:1005
+                                        userInfo:@{NSLocalizedDescriptionKey: @"No MGit mappings file found"}];
+        completion(NO, error);
+        return;
+    }
+    
+    // Read the mappings file
+    NSData *mappingsData = [NSData dataWithContentsOfFile:mappingsPath];
+    if (!mappingsData) {
+        NSError *error = [NSError errorWithDomain:@"MGitErrorDomain"
+                                            code:1006
+                                        userInfo:@{NSLocalizedDescriptionKey: @"Failed to read MGit mappings file"}];
+        completion(NO, error);
+        return;
+    }
+    
+    // Construct the URL for the metadata push endpoint
+    NSString *metadataURLString = [NSString stringWithFormat:@"%@/api/mgit/repos/%@/metadata", serverBaseURL, repoId];
+    NSURL *metadataURL = [NSURL URLWithString:metadataURLString];
+    
+    // Create the request
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:metadataURL];
+    [request setHTTPMethod:@"POST"];
+    [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+    
+    // Add authorization header if token is provided
+    if (token && [token length] > 0) {
+        [request setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+    }
+    
+    // Set the request body
+    [request setHTTPBody:mappingsData];
+    
+    // Create and execute the task
+    NSURLSession *session = [NSURLSession sharedSession];
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            completion(NO, error);
+            return;
+        }
+        
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        if (httpResponse.statusCode != 200) {
+            NSString *errorMessage = [NSString stringWithFormat:@"Server returned status code %ld", (long)httpResponse.statusCode];
+            NSError *httpError = [NSError errorWithDomain:@"MGitErrorDomain"
+                                                     code:httpResponse.statusCode
+                                                 userInfo:@{NSLocalizedDescriptionKey: errorMessage}];
+            completion(NO, httpError);
+            return;
+        }
+        
+        // Success
+        completion(YES, nil);
+    }];
+    
+    [task resume];
+}
+
 // Extract repository ID from a URL
 - (NSString *)extractRepoIdFromURL:(NSString *)url {
     // Extract the last path component

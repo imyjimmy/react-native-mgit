@@ -117,6 +117,19 @@ class MGit {
   }
 
   /**
+   * Push changes to a remote repository, including MGit metadata
+   * @param {string} repositoryPath - Path to local repository
+   * @param {string} remoteName - Name of the remote (default: "origin")
+   * @param {string} refspec - References to push (default: "HEAD")
+   * @param {string} token - Authentication token
+   * @param {Object} options - Push options
+   * @returns {Promise<Object>} - Resolves with success information
+   */
+  static mgitPush(repositoryPath, remoteName = "origin", refspec = "HEAD", token, options = {}) {
+    return MGitModule.mgitPush(repositoryPath, remoteName, refspec, token, options);
+  }
+
+  /**
    * Listen for git progress events
    * @param {Function} callback - Callback to handle progress events
    * @returns {Object} - Subscription that should be cleaned up
