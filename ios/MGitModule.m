@@ -961,6 +961,621 @@ RCT_EXPORT_METHOD(createMCommit:(NSString *)repositoryPath
     git_repository_free(repo);
 }
 
+// MGit clone implementation - performs Git clone and sets up MGit metadata
+RCT_EXPORT_METHOD(mgitClone:(NSString *)url
+                  localPath:(NSString *)localPath
+                  token:(NSString *)token
+                  options:(NSDictionary *)options
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    // Check parameters
+    if (!url || !localPath) {
+        reject(@"INVALID_PARAMS", @"URL and local path are required", nil);
+        return;
+    }
+    
+    // Extract repo ID from URL
+    NSString *repoId = [self extractRepoIdFromURL:url];
+    NSString *serverBaseURL = [self extractServerBaseURLFromURL:url];
+    
+    if (!repoId) {
+        reject(@"INVALID_URL", @"Could not extract repository ID from URL", nil);
+        return;
+    }
+    
+    // Set up progress tracking
+    __block BOOL cloneCompleted = NO;
+    __block NSError *cloneError = nil;
+    
+    // Step 1: Fetch repository information
+    [self sendEventWithName:@"MGitProgress" body:@{
+        @"stage": @"metadata",
+        @"message": @"Fetching repository metadata..."
+    }];
+    
+    [self fetchRepositoryInfo:serverBaseURL repoId:repoId token:token completion:^(NSDictionary *repoInfo, NSError *error) {
+        if (error) {
+            reject(@"FETCH_ERROR", @"Failed to fetch repository information", error);
+            return;
+        }
+        
+        // Step 2: Clone the Git repository
+        [self sendEventWithName:@"MGitProgress" body:@{
+            @"stage": @"clone",
+            @"message": @"Cloning Git repository..."
+        }];
+        
+        // Create repository with libgit2
+        git_repository *repo = NULL;
+        git_clone_options clone_opts = GIT_CLONE_OPTIONS_INIT;
+        
+        // Setup clone options
+        BOOL bareRepo = [options[@"bare"] boolValue];
+        if (bareRepo) {
+            clone_opts.bare = 1;
+        }
+        
+        // Setup authentication if token is provided
+        if (token && [token length] > 0) {
+            // Add HTTP header for token authentication
+            git_strarray custom_headers = {0};
+            char *header = NULL;
+            
+            NSString *authHeader = [NSString stringWithFormat:@"Authorization: Bearer %@", token];
+            header = strdup([authHeader UTF8String]);
+            
+            char *headers[1] = { header };
+            custom_headers.strings = headers;
+            custom_headers.count = 1;
+            
+            clone_opts.fetch_opts.custom_headers = custom_headers;
+        }
+        
+        // Setup progress callback
+        __block int total_objects = 0;
+        __block int received_objects = 0;
+        
+        git_clone_options_init(&clone_opts, GIT_CLONE_OPTIONS_VERSION);
+        clone_opts.fetch_opts.callbacks.transfer_progress = ^int(const git_transfer_progress *stats, void *payload) {
+            // Report progress to JS
+            total_objects = stats->total_objects;
+            received_objects = stats->received_objects;
+            
+            [self sendEventWithName:@"MGitProgress" body:@{
+                @"stage": @"download",
+                @"receivedObjects": @(stats->received_objects),
+                @"totalObjects": @(stats->total_objects),
+                @"indexedObjects": @(stats->indexed_objects),
+                @"receivedBytes": @(stats->received_bytes)
+            }];
+            return 0;
+        };
+        
+        // Prepare Git URL
+        NSString *gitURL = [NSString stringWithFormat:@"%@/api/mgit/repos/%@", serverBaseURL, repoId];
+        
+        // Perform the clone operation
+        int result = git_clone(&repo, [gitURL UTF8String], [localPath UTF8String], &clone_opts);
+        
+        // Clean up custom headers
+        if (token && [token length] > 0) {
+            free(clone_opts.fetch_opts.custom_headers.strings[0]);
+        }
+        
+        if (result != 0) {
+            NSError *error = [self errorFromGitResult:result];
+            reject(@"CLONE_ERROR", @"Failed to clone repository", error);
+            return;
+        }
+        
+        // Step 3: Fetch MGit metadata
+        [self sendEventWithName:@"MGitProgress" body:@{
+            @"stage": @"metadata",
+            @"message": @"Fetching MGit metadata..."
+        }];
+        
+        [self fetchMGitMetadata:serverBaseURL repoId:repoId token:token completion:^(NSData *mappingsData, NSError *error) {
+            if (error) {
+                // Even if metadata fetch fails, we still have the Git repository
+                NSLog(@"Warning: Failed to fetch MGit metadata: %@", error);
+            }
+            
+            // Step 4: Set up MGit structure
+            [self sendEventWithName:@"MGitProgress" body:@{
+                @"stage": @"setup",
+                @"message": @"Setting up MGit repository structure..."
+            }];
+            
+            // Free Git repository
+            git_repository_free(repo);
+            
+            // Setup MGit directories and files
+            [self setupMGitStructure:localPath withMappings:mappingsData repoInfo:repoInfo completion:^(NSError *error) {
+                if (error) {
+                    reject(@"SETUP_ERROR", @"Failed to set up MGit repository structure", error);
+                    return;
+                }
+                
+                // Step 5: Reconstruct MGit objects
+                [self sendEventWithName:@"MGitProgress" body:@{
+                    @"stage": @"reconstruct",
+                    @"message": @"Reconstructing MGit objects..."
+                }];
+                
+                [self reconstructMGitObjects:localPath completion:^(NSError *error) {
+                    if (error) {
+                        NSLog(@"Warning: Could not fully reconstruct MGit objects: %@", error);
+                    }
+                    
+                    // Done!
+                    [self sendEventWithName:@"MGitProgress" body:@{
+                        @"stage": @"complete",
+                        @"message": @"Clone completed successfully"
+                    }];
+                    
+                    resolve(@{
+                        @"path": localPath,
+                        @"repoId": repoId,
+                        @"success": @YES
+                    });
+                }];
+            }];
+        }];
+    }];
+}
+
+// Extract repository ID from a URL
+- (NSString *)extractRepoIdFromURL:(NSString *)url {
+    // Extract the last path component
+    NSArray *pathComponents = [url pathComponents];
+    if (pathComponents.count > 0) {
+        NSString *lastComponent = pathComponents.lastObject;
+        
+        // Remove .git suffix if present
+        if ([lastComponent hasSuffix:@".git"]) {
+            lastComponent = [lastComponent substringToIndex:lastComponent.length - 4];
+        }
+        
+        return lastComponent;
+    }
+    
+    return nil;
+}
+
+// Extract server base URL from repository URL
+- (NSString *)extractServerBaseURLFromURL:(NSString *)url {
+    NSURL *nsurl = [NSURL URLWithString:url];
+    if (!nsurl) {
+        return nil;
+    }
+    
+    // Get the scheme, host, and port
+    NSString *scheme = nsurl.scheme ?: @"http";
+    NSString *host = nsurl.host ?: @"localhost";
+    NSNumber *port = nsurl.port;
+    
+    if (port) {
+        return [NSString stringWithFormat:@"%@://%@:%@", scheme, host, port];
+    } else {
+        return [NSString stringWithFormat:@"%@://%@", scheme, host];
+    }
+}
+
+// Fetch repository information
+- (void)fetchRepositoryInfo:(NSString *)serverBaseURL 
+                     repoId:(NSString *)repoId 
+                      token:(NSString *)token 
+                 completion:(void (^)(NSDictionary *repoInfo, NSError *error))completion {
+    // Construct the URL for the info endpoint
+    NSString *infoURLString = [NSString stringWithFormat:@"%@/api/mgit/repos/%@/info", serverBaseURL, repoId];
+    NSURL *infoURL = [NSURL URLWithString:infoURLString];
+    
+    // Create the request
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:infoURL];
+    [request setHTTPMethod:@"GET"];
+    
+    // Add authorization header if token is provided
+    if (token && [token length] > 0) {
+        [request setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+    }
+    
+    // Create and execute the task
+    NSURLSession *session = [NSURLSession sharedSession];
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+        
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        if (httpResponse.statusCode != 200) {
+            NSString *errorMessage = [NSString stringWithFormat:@"Server returned status code %ld", (long)httpResponse.statusCode];
+            NSError *httpError = [NSError errorWithDomain:@"MGitErrorDomain"
+                                                     code:httpResponse.statusCode
+                                                 userInfo:@{NSLocalizedDescriptionKey: errorMessage}];
+            completion(nil, httpError);
+            return;
+        }
+        
+        // Parse the JSON response
+        NSError *jsonError;
+        NSDictionary *repoInfo = [NSJSONSerialization JSONObjectWithData:data options:0 error:&jsonError];
+        
+        if (jsonError) {
+            completion(nil, jsonError);
+            return;
+        }
+        
+        completion(repoInfo, nil);
+    }];
+    
+    [task resume];
+}
+
+// Fetch MGit metadata
+- (void)fetchMGitMetadata:(NSString *)serverBaseURL 
+                   repoId:(NSString *)repoId 
+                    token:(NSString *)token 
+               completion:(void (^)(NSData *mappingsData, NSError *error))completion {
+    // Construct the URL for the metadata endpoint
+    NSString *metadataURLString = [NSString stringWithFormat:@"%@/api/mgit/repos/%@/metadata", serverBaseURL, repoId];
+    NSURL *metadataURL = [NSURL URLWithString:metadataURLString];
+    
+    // Create the request
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:metadataURL];
+    [request setHTTPMethod:@"GET"];
+    
+    // Add authorization header if token is provided
+    if (token && [token length] > 0) {
+        [request setValue:[NSString stringWithFormat:@"Bearer %@", token] forHTTPHeaderField:@"Authorization"];
+    }
+    
+    // Create and execute the task
+    NSURLSession *session = [NSURLSession sharedSession];
+    NSURLSessionDataTask *task = [session dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (error) {
+            completion(nil, error);
+            return;
+        }
+        
+        NSHTTPURLResponse *httpResponse = (NSHTTPURLResponse *)response;
+        if (httpResponse.statusCode != 200) {
+            NSString *errorMessage = [NSString stringWithFormat:@"Server returned status code %ld", (long)httpResponse.statusCode];
+            NSError *httpError = [NSError errorWithDomain:@"MGitErrorDomain"
+                                                     code:httpResponse.statusCode
+                                                 userInfo:@{NSLocalizedDescriptionKey: errorMessage}];
+            completion(nil, httpError);
+            return;
+        }
+        
+        // Return the raw data - we'll parse it when setting up the structure
+        completion(data, nil);
+    }];
+    
+    [task resume];
+}
+
+// Set up MGit directory structure
+- (void)setupMGitStructure:(NSString *)repoPath 
+              withMappings:(NSData *)mappingsData 
+                  repoInfo:(NSDictionary *)repoInfo
+                completion:(void (^)(NSError *error))completion {
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    
+    // Create the .mgit directory structure
+    NSString *mgitDir = [repoPath stringByAppendingPathComponent:@".mgit"];
+    NSString *objectsDir = [mgitDir stringByAppendingPathComponent:@"objects"];
+    NSString *refsDir = [mgitDir stringByAppendingPathComponent:@"refs"];
+    NSString *refsHeadsDir = [refsDir stringByAppendingPathComponent:@"heads"];
+    NSString *refsTags = [refsDir stringByAppendingPathComponent:@"tags"];
+    NSString *mappingsDir = [mgitDir stringByAppendingPathComponent:@"mappings"];
+    
+    // Create all required directories
+    NSArray *directories = @[mgitDir, objectsDir, refsDir, refsHeadsDir, refsTags, mappingsDir];
+    for (NSString *dir in directories) {
+        NSError *dirError;
+        if (![fileManager createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:&dirError]) {
+            completion(dirError);
+            return;
+        }
+    }
+    
+    // Write hash mappings if available
+    if (mappingsData) {
+        NSString *mappingsPath = [mappingsDir stringByAppendingPathComponent:@"hash_mappings.json"];
+        if (![mappingsData writeToFile:mappingsPath atomically:YES]) {
+            NSError *writeError = [NSError errorWithDomain:@"MGitErrorDomain"
+                                                    code:1001
+                                                userInfo:@{NSLocalizedDescriptionKey: @"Failed to write mappings file"}];
+            completion(writeError);
+            return;
+        }
+        
+        // Also write to nostr_mappings.json for compatibility
+        NSString *nostrMappingsPath = [mgitDir stringByAppendingPathComponent:@"nostr_mappings.json"];
+        [mappingsData writeToFile:nostrMappingsPath atomically:YES];
+    }
+    
+    // Create an initial HEAD file pointing to refs/heads/master
+    NSString *headPath = [mgitDir stringByAppendingPathComponent:@"HEAD"];
+    NSString *headContent = @"ref: refs/heads/master";
+    
+    if (![headContent writeToFile:headPath atomically:YES encoding:NSUTF8StringEncoding error:nil]) {
+        NSError *writeError = [NSError errorWithDomain:@"MGitErrorDomain"
+                                                code:1002
+                                            userInfo:@{NSLocalizedDescriptionKey: @"Failed to write HEAD file"}];
+        completion(writeError);
+        return;
+    }
+    
+    // Create MGit config file
+    NSString *configPath = [mgitDir stringByAppendingPathComponent:@"config"];
+    NSMutableString *configContent = [NSMutableString string];
+    [configContent appendString:@"[repository]\n"];
+    
+    if (repoInfo[@"id"]) {
+        [configContent appendFormat:@"\tid = %@\n", repoInfo[@"id"]];
+    }
+    
+    if (repoInfo[@"name"]) {
+        [configContent appendFormat:@"\tname = %@\n", repoInfo[@"name"]];
+    }
+    
+    if (![configContent writeToFile:configPath atomically:YES encoding:NSUTF8StringEncoding error:nil]) {
+        NSError *writeError = [NSError errorWithDomain:@"MGitErrorDomain"
+                                                code:1003
+                                            userInfo:@{NSLocalizedDescriptionKey: @"Failed to write config file"}];
+        completion(writeError);
+        return;
+    }
+    
+    completion(nil);
+}
+
+// Reconstruct MGit objects from Git objects using mappings
+- (void)reconstructMGitObjects:(NSString *)repoPath completion:(void (^)(NSError *error))completion {
+    // Open the Git repository
+    git_repository *repo = NULL;
+    int error = git_repository_open(&repo, [repoPath UTF8String]);
+    
+    if (error != 0) {
+        NSError *gitError = [self errorFromGitResult:error];
+        completion(gitError);
+        return;
+    }
+    
+    // Get the mappings file
+    NSString *mappingsPath = [repoPath stringByAppendingPathComponent:@".mgit/mappings/hash_mappings.json"];
+    if (![[NSFileManager defaultManager] fileExistsAtPath:mappingsPath]) {
+        // No mappings file, nothing to reconstruct
+        git_repository_free(repo);
+        completion(nil);
+        return;
+    }
+    
+    // Read the mappings file
+    NSData *mappingsData = [NSData dataWithContentsOfFile:mappingsPath];
+    if (!mappingsData) {
+        NSError *readError = [NSError errorWithDomain:@"MGitErrorDomain"
+                                               code:1004
+                                           userInfo:@{NSLocalizedDescriptionKey: @"Failed to read mappings file"}];
+        git_repository_free(repo);
+        completion(readError);
+        return;
+    }
+    
+    // Parse the mappings
+    NSError *jsonError;
+    NSArray *mappings = [NSJSONSerialization JSONObjectWithData:mappingsData options:0 error:&jsonError];
+    
+    if (jsonError) {
+        git_repository_free(repo);
+        completion(jsonError);
+        return;
+    }
+    
+    // Process each mapping
+    for (NSDictionary *mapping in mappings) {
+        NSString *gitHash = mapping[@"git_hash"];
+        NSString *mgitHash = mapping[@"mgit_hash"];
+        NSString *pubkey = mapping[@"pubkey"];
+        
+        // Skip if any required field is missing
+        if (!gitHash || !mgitHash || !pubkey) {
+            continue;
+        }
+        
+        // Convert gitHash string to git_oid
+        git_oid git_id;
+        if (git_oid_fromstr(&git_id, [gitHash UTF8String]) != 0) {
+            continue;
+        }
+        
+        // Look up the commit
+        git_commit *commit = NULL;
+        if (git_commit_lookup(&commit, repo, &git_id) != 0) {
+            continue;
+        }
+        
+        // Create the MGit commit object structure
+        NSMutableDictionary *mgitCommit = [NSMutableDictionary dictionary];
+        mgitCommit[@"type"] = @"commit";
+        mgitCommit[@"mgit_hash"] = mgitHash;
+        mgitCommit[@"git_hash"] = gitHash;
+        
+        // Get tree hash
+        const git_oid *tree_id = git_commit_tree_id(commit);
+        char tree_str[GIT_OID_HEXSZ + 1] = {0};
+        git_oid_fmt(tree_str, tree_id);
+        mgitCommit[@"tree_hash"] = [NSString stringWithUTF8String:tree_str];
+        
+        // Get parent MGit hashes
+        NSMutableArray *parentMGitHashes = [NSMutableArray array];
+        int parentCount = git_commit_parentcount(commit);
+        
+        for (int i = 0; i < parentCount; i++) {
+            git_commit *parent = NULL;
+            git_commit_parent(&parent, commit, i);
+            
+            if (parent) {
+                NSString *parentGitHash = [self gitOidToString:git_commit_id(parent)];
+                
+                // Find MGit hash for this parent
+                BOOL foundParent = NO;
+                for (NSDictionary *m in mappings) {
+                    if ([m[@"git_hash"] isEqualToString:parentGitHash]) {
+                        [parentMGitHashes addObject:m[@"mgit_hash"]];
+                        foundParent = YES;
+                        break;
+                    }
+                }
+                
+                // If no MGit hash found, use Git hash
+                if (!foundParent) {
+                    [parentMGitHashes addObject:parentGitHash];
+                }
+                
+                git_commit_free(parent);
+            }
+        }
+        
+        mgitCommit[@"parent_hashes"] = parentMGitHashes;
+        
+        // Get author and committer info
+        const git_signature *author = git_commit_author(commit);
+        const git_signature *committer = git_commit_committer(commit);
+        
+        mgitCommit[@"author"] = @{
+            @"name": @(author->name),
+            @"email": @(author->email),
+            @"pubkey": pubkey,
+            @"when": @(author->when.time)
+        };
+        
+        mgitCommit[@"committer"] = @{
+            @"name": @(committer->name),
+            @"email": @(committer->email),
+            @"pubkey": pubkey,
+            @"when": @(committer->when.time)
+        };
+        
+        mgitCommit[@"message"] = @(git_commit_message(commit));
+        mgitCommit[@"metadata"] = @{@"version": @"1.0"};
+        
+        // Store the MGit commit object
+        [self storeMGitCommitObject:mgitCommit inRepo:repoPath];
+        
+        git_commit_free(commit);
+    }
+    
+    // Update branch references
+    git_reference_iterator *iter = NULL;
+    if (git_reference_iterator_new(&iter, repo) == 0) {
+        git_reference *ref = NULL;
+        
+        while (git_reference_next(&ref, iter) == 0) {
+            if (git_reference_is_branch(ref)) {
+                NSString *branchName = @(git_reference_shorthand(ref));
+                const git_oid *target = git_reference_target(ref);
+                NSString *gitHash = [self gitOidToString:target];
+                
+                // Find MGit hash for this Git hash
+                for (NSDictionary *mapping in mappings) {
+                    if ([mapping[@"git_hash"] isEqualToString:gitHash]) {
+                        NSString *mgitHash = mapping[@"mgit_hash"];
+                        NSString *refPath = [NSString stringWithFormat:@"refs/heads/%@", branchName];
+                        [self updateMGitRef:refPath toHash:mgitHash inRepo:repoPath];
+                        break;
+                    }
+                }
+                
+                git_reference_free(ref);
+            }
+        }
+        
+        git_reference_iterator_free(iter);
+    }
+    
+    // Get HEAD reference
+    git_reference *head = NULL;
+    if (git_repository_head(&head, repo) == 0) {
+        if (git_reference_is_branch(head)) {
+            NSString *branchName = @(git_reference_shorthand(head));
+            NSString *headContent = [NSString stringWithFormat:@"ref: refs/heads/%@", branchName];
+            NSString *headPath = [repoPath stringByAppendingPathComponent:@".mgit/HEAD"];
+            [headContent writeToFile:headPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        } else {
+            // Detached HEAD
+            const git_oid *target = git_reference_target(head);
+            NSString *gitHash = [self gitOidToString:target];
+            
+            // Find MGit hash for this Git hash
+            for (NSDictionary *mapping in mappings) {
+                if ([mapping[@"git_hash"] isEqualToString:gitHash]) {
+                    NSString *mgitHash = mapping[@"mgit_hash"];
+                    NSString *headPath = [repoPath stringByAppendingPathComponent:@".mgit/HEAD"];
+                    [mgitHash writeToFile:headPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                    break;
+                }
+            }
+        }
+        
+        git_reference_free(head);
+    }
+    
+    git_repository_free(repo);
+    completion(nil);
+}
+
+// Store an MGit commit object
+- (void)storeMGitCommitObject:(NSDictionary *)commit inRepo:(NSString *)repoPath {
+    NSString *mgitHash = commit[@"mgit_hash"];
+    if (!mgitHash || [mgitHash length] < 2) {
+        return;
+    }
+    
+    // Get the object directory path
+    NSString *prefix = [mgitHash substringToIndex:2];
+    NSString *suffix = [mgitHash substringFromIndex:2];
+    NSString *objDir = [repoPath stringByAppendingPathComponent:[NSString stringWithFormat:@".mgit/objects/%@", prefix]];
+    NSString *objPath = [objDir stringByAppendingPathComponent:suffix];
+    
+    // Create the directory if it doesn't exist
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    if (![fileManager createDirectoryAtPath:objDir withIntermediateDirectories:YES attributes:nil error:nil]) {
+        return;
+    }
+    
+    // Serialize the commit object to JSON
+    NSError *jsonError;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:commit options:NSJSONWritingPrettyPrinted error:&jsonError];
+    
+    if (jsonError) {
+        return;
+    }
+    
+    // Write to file
+    [jsonData writeToFile:objPath atomically:YES];
+}
+
+// Update an MGit reference
+- (void)updateMGitRef:(NSString *)refName toHash:(NSString *)hash inRepo:(NSString *)repoPath {
+    // Ensure the refs directory exists
+    NSString *refsPath = [repoPath stringByAppendingPathComponent:@".mgit"];
+    refsPath = [refsPath stringByAppendingPathComponent:refName];
+    
+    // Create parent directories if needed
+    NSFileManager *fileManager = [NSFileManager defaultManager];
+    NSString *parentDir = [refsPath stringByDeletingLastPathComponent];
+    
+    if (![fileManager createDirectoryAtPath:parentDir withIntermediateDirectories:YES attributes:nil error:nil]) {
+        return;
+    }
+    
+    // Write the reference
+    [hash writeToFile:refsPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+}
+
 // Helper: Convert git_oid to NSString
 - (NSString *)gitOidToString:(const git_oid *)oid {
     char hash_string[GIT_OID_HEXSZ + 1] = {0};
