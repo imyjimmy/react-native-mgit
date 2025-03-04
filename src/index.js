@@ -105,6 +105,18 @@ class MGit {
   }
 
   /**
+   * Clone an MGit repository
+   * @param {string} url - The repository URL
+   * @param {string} localPath - Local path where the repository will be cloned
+   * @param {string} token - Authentication token for the repository
+   * @param {Object} options - Clone options (e.g., bare)
+   * @returns {Promise<Object>} - Resolves with success information
+   */
+  static mgitClone(url, localPath, token, options = {}) {
+    return MGitModule.mgitClone(url, localPath, token, options);
+  }
+
+  /**
    * Listen for git progress events
    * @param {Function} callback - Callback to handle progress events
    * @returns {Object} - Subscription that should be cleaned up
