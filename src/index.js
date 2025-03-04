@@ -68,13 +68,40 @@ class MGit {
   }
 
   /**
-   * Run mgit show command
+   * Show detailed information about a commit with MGit context
    * @param {string} repositoryPath - Path to local repository
    * @param {string} commitRef - Commit reference (hash, branch, etc.)
-   * @returns {Promise<Object>} - Resolves with commit information
+   * @returns {Promise<Object>} - Resolves with formatted commit information including 
+   *                              MGit hash, Git hash, author with nostr pubkey, and diff
    */
   static show(repositoryPath, commitRef = 'HEAD') {
     return MGitModule.mgitShow(repositoryPath, commitRef);
+  }
+
+  /**
+   * Show detailed commit information in structured format
+   * @param {string} repositoryPath - Path to local repository
+   * @param {string} commitRef - Commit reference (hash, branch, etc.)
+   * @param {Object} options - Options for showing commit
+   * @returns {Promise<Object>} - Resolves with structured commit information
+   */
+  static showCommit(repositoryPath, commitRef = 'HEAD', options = {}) {
+    return MGitModule.showCommit(repositoryPath, commitRef, options);
+  }
+
+  /**
+   * Show MGit commit information directly from MGit storage
+   * @param {string} repositoryPath - Path to local repository
+   * @param {string} commitRef - MGit commit hash
+   * @returns {Promise<Object>} - Resolves with MGit commit information
+   */
+  static showMGitCommit(repositoryPath, commitRef) {
+    return MGitModule.showMGitCommit(repositoryPath, commitRef);
+  }
+
+  // Add a method for viewing MGit commit log
+  static log(repositoryPath, options = {}) {
+    return MGitModule.mgitLog(repositoryPath, options);
   }
 
   /**
@@ -94,6 +121,10 @@ class MGit {
   static onError(callback) {
     return MGitEventEmitter.addListener('MGitError', callback);
   }
+
+  /**
+   * Tests below
+   */
 
   /**
    * Test MGit hash generation

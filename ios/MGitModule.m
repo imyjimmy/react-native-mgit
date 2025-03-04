@@ -351,7 +351,13 @@ RCT_EXPORT_METHOD(commit:(NSString *)repositoryPath
   });
 }
 
-// MGit specific command for show
+/**
+  Uses libgit2 to read the Git repository data
+  Looks up the corresponding MGit hash and nostr pubkey from the mappings file
+  Formats the output to match the example you provided
+  Generates a Git diff for the changes
+  Returns the formatted text output
+*/
 RCT_EXPORT_METHOD(mgitShow:(NSString *)repositoryPath
                   commitRef:(NSString *)commitRef
                   resolver:(RCTPromiseResolveBlock)resolve
@@ -360,34 +366,287 @@ RCT_EXPORT_METHOD(mgitShow:(NSString *)repositoryPath
     commitRef = @"HEAD"; // Default to HEAD if no commit reference provided
   }
   
-  NSTask *task = [[NSTask alloc] init];
-  [task setCurrentDirectoryPath:repositoryPath];
-  
-  // Use mgit executable path - would need to be configured or discovered
-  NSString *mgitPath = options[@"mgitPath"] ?: @"/usr/local/bin/mgit";
-  [task setLaunchPath:mgitPath];
-  [task setArguments:@[@"show", commitRef]];
-  
-  NSPipe *pipe = [NSPipe pipe];
-  [task setStandardOutput:pipe];
-  [task setStandardError:pipe];
-  
-  NSError *error;
-  [task launchAndReturnError:&error];
-  
-  if (error) {
-    reject(@"SHOW_ERROR", @"Failed to show commit", error);
+  // Open the repository
+  git_repository *repo = NULL;
+  int error = git_repository_open(&repo, [repositoryPath UTF8String]);
+  if (error < 0) {
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
     return;
   }
   
-  NSFileHandle *file = [pipe fileHandleForReading];
-  NSData *data = [file readDataToEndOfFile];
-  NSString *output = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+  // Resolve the reference (can be branch name, tag, or commit hash)
+  git_object *obj = NULL;
+  error = git_revparse_single(&obj, repo, [commitRef UTF8String]);
+  if (error < 0) {
+    git_repository_free(repo);
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
   
+  // Get the commit from the resolved object
+  git_commit *commit = NULL;
+  error = git_commit_lookup(&commit, repo, git_object_id(obj));
+  git_object_free(obj);
+  
+  if (error < 0) {
+    git_repository_free(repo);
+    const git_error *libgitError = git_error_last();
+    reject(@"GIT_ERROR", [NSString stringWithUTF8String:libgitError->message], nil);
+    return;
+  }
+  
+  // Get the commit details
+  const git_signature *author = git_commit_author(commit);
+  const char *message = git_commit_message(commit);
+  
+  // Get Git hash
+  NSString *gitHash = [self gitOidToString:git_commit_id(commit)];
+  
+  // Look up the MGit hash and nostr pubkey
+  NSString *mgitHash = @"";
+  NSString *nostrPubkey = @"";
+  NSArray *parentMGitHashes = @[];
+  
+  // Load hash mappings file
+  NSString *mappingsPath = [repositoryPath stringByAppendingPathComponent:@".mgit/mappings/hash_mappings.json"];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:mappingsPath]) {
+    NSData *mappingsData = [NSData dataWithContentsOfFile:mappingsPath];
+    if (mappingsData) {
+      NSError *jsonError;
+      NSArray *mappings = [NSJSONSerialization JSONObjectWithData:mappingsData options:0 error:&jsonError];
+      
+      if (!jsonError) {
+        // Find matching mapping for this commit
+        for (NSDictionary *mapping in mappings) {
+          if ([mapping[@"git_hash"] isEqualToString:gitHash]) {
+            mgitHash = mapping[@"mgit_hash"];
+            nostrPubkey = mapping[@"pubkey"];
+            break;
+          }
+        }
+        
+        // Now find parent mappings
+        NSMutableArray *parentMGits = [NSMutableArray array];
+        int parentCount = git_commit_parentcount(commit);
+        
+        for (int i = 0; i < parentCount; i++) {
+          git_commit *parent = NULL;
+          git_commit_parent(&parent, commit, i);
+          
+          if (parent) {
+            NSString *parentGitHash = [self gitOidToString:git_commit_id(parent)];
+            
+            // Find MGit hash for this parent
+            for (NSDictionary *mapping in mappings) {
+              if ([mapping[@"git_hash"] isEqualToString:parentGitHash]) {
+                [parentMGits addObject:mapping[@"mgit_hash"]];
+                break;
+              }
+            }
+            
+            git_commit_free(parent);
+          }
+        }
+        
+        parentMGitHashes = [NSArray arrayWithArray:parentMGits];
+      }
+    }
+  }
+  
+  // Prepare output format similar to the Go implementation
+  NSMutableString *output = [NSMutableString string];
+  
+  // If we found an MGit hash, use that as primary
+  if (mgitHash.length > 0) {
+    [output appendFormat:@"commit %@\n", mgitHash];
+    [output appendFormat:@"git-commit %@\n", gitHash];
+  } else {
+    // Otherwise use Git hash
+    [output appendFormat:@"commit %@\n", gitHash];
+  }
+  
+  // Add author info with nostr pubkey if available
+  if (nostrPubkey.length > 0) {
+    [output appendFormat:@"Author: %s <%s> <%@>\n", author->name, author->email, nostrPubkey];
+  } else {
+    [output appendFormat:@"Author: %s <%s>\n", author->name, author->email];
+  }
+  
+  // Add date
+  NSDate *date = [NSDate dateWithTimeIntervalSince1970:author->when.time];
+  NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+  [formatter setDateFormat:@"EEE MMM d HH:mm:ss yyyy Z"];
+  [output appendFormat:@"Date:   %@\n\n", [formatter stringFromDate:date]];
+  
+  // Add commit message
+  [output appendFormat:@"    %s\n", message];
+  
+  // Add parent information if available
+  if (parentMGitHashes.count > 0) {
+    [output appendString:@"\nParents:\n"];
+    for (NSString *parentHash in parentMGitHashes) {
+      [output appendFormat:@"  %@\n", parentHash];
+    }
+    [output appendString:@"\n"];
+  }
+  
+  // Generate diff
+  git_tree *commitTree = NULL;
+  error = git_commit_tree(&commitTree, commit);
+  
+  if (error == 0) {
+    git_tree *parentTree = NULL;
+    
+    // Get parent tree if available
+    if (git_commit_parentcount(commit) > 0) {
+      git_commit *parent = NULL;
+      git_commit_parent(&parent, commit, 0);
+      git_commit_tree(&parentTree, parent);
+      git_commit_free(parent);
+    }
+    
+    // Create diff options
+    git_diff_options diff_opts = GIT_DIFF_OPTIONS_INIT;
+    
+    // Create the diff
+    git_diff *diff = NULL;
+    if (parentTree) {
+      error = git_diff_tree_to_tree(&diff, repo, parentTree, commitTree, &diff_opts);
+    } else {
+      error = git_diff_tree_to_tree(&diff, repo, NULL, commitTree, &diff_opts);
+    }
+    
+    if (error == 0) {
+      // Convert diff to patch format
+      git_patch *patches[1024]; // Assuming no more than 1024 files changed
+      size_t patchCount = 0;
+      
+      error = git_diff_get_patches(patches, &patchCount, diff, 1024);
+      
+      if (error == 0) {
+        // Add each patch to output
+        for (size_t i = 0; i < patchCount; i++) {
+          git_buf patchBuf = {0};
+          git_patch_to_buf(&patchBuf, patches[i]);
+          
+          [output appendFormat:@"%s", patchBuf.ptr];
+          
+          git_buf_dispose(&patchBuf);
+          git_patch_free(patches[i]);
+        }
+      }
+      
+      git_diff_free(diff);
+    }
+    
+    if (parentTree) git_tree_free(parentTree);
+    git_tree_free(commitTree);
+  }
+  
+  // Clean up
+  git_commit_free(commit);
+  git_repository_free(repo);
+  
+  // Return the formatted output
   resolve(@{
     @"output": output,
     @"success": @YES
   });
+}
+
+// Get MGit commit log directly from MGit storage (.mgit)
+RCT_EXPORT_METHOD(mgitLog:(NSString *)repositoryPath
+                  options:(NSDictionary *)options
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+  // Check if the .mgit directory exists
+  NSString *mgitDir = [repositoryPath stringByAppendingPathComponent:@".mgit"];
+  if (![[NSFileManager defaultManager] fileExistsAtPath:mgitDir]) {
+    reject(@"MGIT_ERROR", @"Not an MGit repository or .mgit directory not found", nil);
+    return;
+  }
+  
+  // Get the HEAD reference
+  NSString *headPath = [mgitDir stringByAppendingPathComponent:@"HEAD"];
+  if (![[NSFileManager defaultManager] fileExistsAtPath:headPath]) {
+    reject(@"MGIT_ERROR", @"MGit HEAD not found", nil);
+    return;
+  }
+  
+  // Read the HEAD file
+  NSString *headContent = [NSString stringWithContentsOfFile:headPath encoding:NSUTF8StringEncoding error:nil];
+  NSString *headRef;
+  NSString *headHash;
+  
+  if ([headContent hasPrefix:@"ref: "]) {
+    // HEAD points to a branch reference
+    headRef = [headContent substringFromIndex:5]; // Skip "ref: "
+    NSString *refPath = [mgitDir stringByAppendingPathComponent:headRef];
+    
+    if ([[NSFileManager defaultManager] fileExistsAtPath:refPath]) {
+      headHash = [NSString stringWithContentsOfFile:refPath encoding:NSUTF8StringEncoding error:nil];
+    }
+  } else {
+    // HEAD is detached and points directly to a commit
+    headHash = headContent;
+  }
+  
+  if (!headHash) {
+    reject(@"MGIT_ERROR", @"Failed to resolve MGit HEAD reference", nil);
+    return;
+  }
+  
+  // Get max count if specified
+  NSInteger maxCount = [options[@"maxCount"] integerValue];
+  if (maxCount <= 0) {
+    maxCount = 100; // Default to 100 commits
+  }
+  
+  // Start traversing from HEAD
+  NSMutableArray *commits = [NSMutableArray array];
+  NSMutableSet *visitedHashes = [NSMutableSet set];
+  NSMutableArray *queue = [NSMutableArray arrayWithObject:headHash];
+  
+  while (queue.count > 0 && commits.count < maxCount) {
+    NSString *currentHash = queue[0];
+    [queue removeObjectAtIndex:0];
+    
+    // Skip if already visited
+    if ([visitedHashes containsObject:currentHash]) {
+      continue;
+    }
+    
+    [visitedHashes addObject:currentHash];
+    
+    // Get the MGit commit object
+    NSString *objectDir = [mgitDir stringByAppendingPathComponent:@"objects"];
+    NSString *prefixDir = [objectDir stringByAppendingPathComponent:[currentHash substringToIndex:2]];
+    NSString *objectPath = [prefixDir stringByAppendingPathComponent:[currentHash substringFromIndex:2]];
+    
+    if ([[NSFileManager defaultManager] fileExistsAtPath:objectPath]) {
+      NSData *objectData = [NSData dataWithContentsOfFile:objectPath];
+      
+      if (objectData) {
+        NSError *jsonError;
+        NSDictionary *mgitCommit = [NSJSONSerialization JSONObjectWithData:objectData options:0 error:&jsonError];
+        
+        if (mgitCommit && !jsonError) {
+          // Add to commits array
+          [commits addObject:mgitCommit];
+          
+          // Add parent hashes to queue
+          NSArray *parents = mgitCommit[@"parent_hashes"];
+          if (parents) {
+            [queue addObjectsFromArray:parents];
+          }
+        }
+      }
+    }
+  }
+  
+  resolve(@{@"commits": commits});
 }
 
 // Calculate mcommit hash with Nostr pubkey
