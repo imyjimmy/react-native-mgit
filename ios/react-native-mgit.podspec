@@ -9,9 +9,10 @@ Pod::Spec.new do |s|
   s.authors      = package['author']
   s.homepage     = package['homepage']
   s.platform     = :ios, "11.0"
-  s.source       = { :git => "https://github.com/yourusername/react-native-mgit.git", :tag => "v#{s.version}" }
+  s.source       = { :git => "https://github.com/imyjimmy/react-native-mgit.git", :tag => "v#{s.version}" }
   s.source_files = "*.{h,m}"
   
   s.dependency "React-Core"
   s.dependency "libgit2", "~> 1.3.0"
+  s.pod_target_xcconfig = { 'CLANG_CXX_LANGUAGE_STANDARD' => 'c++14' }
 end
