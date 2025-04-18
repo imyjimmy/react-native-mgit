@@ -352,6 +352,10 @@ RCT_EXPORT_METHOD(commit:(NSString *)repositoryPath
 }
 
 /**
+* mgit Core Functions
+*/
+
+/**
   Uses libgit2 to read the Git repository data
   Looks up the corresponding MGit hash and nostr pubkey from the mappings file
   Formats the output to match the example you provided
@@ -647,73 +651,6 @@ RCT_EXPORT_METHOD(mgitLog:(NSString *)repositoryPath
   }
   
   resolve(@{@"commits": commits});
-}
-
-// Calculate mcommit hash with Nostr pubkey
-- (NSString *)calculateMCommitHash:(git_commit *)commit 
-                    parentMGitHashes:(NSArray<NSString *> *)parentMGitHashes 
-                    pubkey:(NSString *)pubkey {
-    // Create SHA-1 hasher
-    NSMutableData *hashData = [NSMutableData data];
-    
-    // Include the tree hash (similar to the Go implementation)
-    const git_oid *treeHash = git_commit_tree_id(commit);
-    [hashData appendBytes:treeHash->id length:20]; // SHA-1 is 20 bytes
-    
-    // Include all parent MGit hashes
-    for (NSString *parentHashStr in parentMGitHashes) {
-        // Convert hex string to bytes
-        NSMutableData *parentHashData = [NSMutableData dataWithLength:20];
-        char bytes[20];
-        [self hexToBytes:parentHashStr bytes:bytes];
-        [hashData appendBytes:bytes length:20];
-    }
-    
-    // Include the author information with pubkey
-    const git_signature *author = git_commit_author(commit);
-    NSString *authorStr = [NSString stringWithFormat:@"%s <%s> %lld %@", 
-                          author->name, 
-                          author->email, 
-                          (long long)author->when.time,
-                          pubkey];
-    [hashData appendData:[authorStr dataUsingEncoding:NSUTF8StringEncoding]];
-    
-    // Include committer information
-    const git_signature *committer = git_commit_committer(commit);
-    NSString *committerStr = [NSString stringWithFormat:@"%s <%s> %lld %@", 
-                             committer->name, 
-                             committer->email, 
-                             (long long)committer->when.time,
-                             pubkey];
-    [hashData appendData:[committerStr dataUsingEncoding:NSUTF8StringEncoding]];
-    
-    // Include the commit message
-    const char *message = git_commit_message(commit);
-    [hashData appendData:[[NSString stringWithUTF8String:message] dataUsingEncoding:NSUTF8StringEncoding]];
-    
-    // Calculate SHA-1 hash
-    uint8_t digest[CC_SHA1_DIGEST_LENGTH];
-    CC_SHA1(hashData.bytes, (CC_LONG)hashData.length, digest);
-    
-    // Convert to hex string
-    NSMutableString *hexString = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
-    for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
-        [hexString appendFormat:@"%02x", digest[i]];
-    }
-    
-    return hexString;
-}
-
-// Helper: Convert hex string to bytes
-- (void)hexToBytes:(NSString *)hexString bytes:(char *)bytes {
-    NSUInteger length = hexString.length;
-    char buffer[3] = {'\0', '\0', '\0'};
-    
-    for (NSUInteger i = 0; i < length / 2; i++) {
-        buffer[0] = [hexString characterAtIndex:i * 2];
-        buffer[1] = [hexString characterAtIndex:i * 2 + 1];
-        bytes[i] = strtol(buffer, NULL, 16);
-    }
 }
 
 // Create an MGit commit with Nostr pubkey
@@ -1331,6 +1268,77 @@ RCT_EXPORT_METHOD(mgitPush:(NSString *)repositoryPath
             @"metadataPushSuccess": @NO,
             @"warning": @"No MGit metadata to push"
         });
+    }
+}
+
+/**
+* mgit Helper functions
+*/
+
+// Calculate mcommit hash with Nostr pubkey
+- (NSString *)calculateMCommitHash:(git_commit *)commit 
+                    parentMGitHashes:(NSArray<NSString *> *)parentMGitHashes 
+                    pubkey:(NSString *)pubkey {
+    // Create SHA-1 hasher
+    NSMutableData *hashData = [NSMutableData data];
+    
+    // Include the tree hash (similar to the Go implementation)
+    const git_oid *treeHash = git_commit_tree_id(commit);
+    [hashData appendBytes:treeHash->id length:20]; // SHA-1 is 20 bytes
+    
+    // Include all parent MGit hashes
+    for (NSString *parentHashStr in parentMGitHashes) {
+        // Convert hex string to bytes
+        NSMutableData *parentHashData = [NSMutableData dataWithLength:20];
+        char bytes[20];
+        [self hexToBytes:parentHashStr bytes:bytes];
+        [hashData appendBytes:bytes length:20];
+    }
+    
+    // Include the author information with pubkey
+    const git_signature *author = git_commit_author(commit);
+    NSString *authorStr = [NSString stringWithFormat:@"%s <%s> %lld %@", 
+                          author->name, 
+                          author->email, 
+                          (long long)author->when.time,
+                          pubkey];
+    [hashData appendData:[authorStr dataUsingEncoding:NSUTF8StringEncoding]];
+    
+    // Include committer information
+    const git_signature *committer = git_commit_committer(commit);
+    NSString *committerStr = [NSString stringWithFormat:@"%s <%s> %lld %@", 
+                             committer->name, 
+                             committer->email, 
+                             (long long)committer->when.time,
+                             pubkey];
+    [hashData appendData:[committerStr dataUsingEncoding:NSUTF8StringEncoding]];
+    
+    // Include the commit message
+    const char *message = git_commit_message(commit);
+    [hashData appendData:[[NSString stringWithUTF8String:message] dataUsingEncoding:NSUTF8StringEncoding]];
+    
+    // Calculate SHA-1 hash
+    uint8_t digest[CC_SHA1_DIGEST_LENGTH];
+    CC_SHA1(hashData.bytes, (CC_LONG)hashData.length, digest);
+    
+    // Convert to hex string
+    NSMutableString *hexString = [NSMutableString stringWithCapacity:CC_SHA1_DIGEST_LENGTH * 2];
+    for (int i = 0; i < CC_SHA1_DIGEST_LENGTH; i++) {
+        [hexString appendFormat:@"%02x", digest[i]];
+    }
+    
+    return hexString;
+}
+
+// Helper: Convert hex string to bytes
+- (void)hexToBytes:(NSString *)hexString bytes:(char *)bytes {
+    NSUInteger length = hexString.length;
+    char buffer[3] = {'\0', '\0', '\0'};
+    
+    for (NSUInteger i = 0; i < length / 2; i++) {
+        buffer[0] = [hexString characterAtIndex:i * 2];
+        buffer[1] = [hexString characterAtIndex:i * 2 + 1];
+        bytes[i] = strtol(buffer, NULL, 16);
     }
 }
 
