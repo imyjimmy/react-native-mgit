@@ -1,6 +1,6 @@
 # Testing react-native-mgit
 
-This document provides instructions for testing the `react-native-mgit` module, particularly the mcommit hash generation functionality to ensure it matches the Go implementation.
+The `react-native-mgit` module exposes underlying git operations from libgit2, a C library, so that it lets iOS apps use mgit operations. mgit is "medical" git which lets users commit medical history to a git repo, enabling decentralized self custody medical records.
 
 ## Prerequisites
 
