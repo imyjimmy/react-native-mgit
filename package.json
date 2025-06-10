@@ -1,21 +1,24 @@
 {
   "name": "react-native-mgit",
   "version": "0.1.0",
-  "description": "React Native bridge for libgit2 and mgit operations",
+  "description": "React Native bridge for mgit operations using bundled Go binary",
   "main": "src/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "copy-binaries": "./copy-mgit-binaries.sh"
   },
   "keywords": [
     "react-native",
     "ios",
     "git",
     "mgit",
-    "libgit2"
+    "go",
+    "shell"
   ],
   "author": "Your Name",
   "license": "MIT",
   "peerDependencies": {
-    "react-native": ">=0.60.0"
+    "react": "*",
+    "react-native": "*"
   }
 }
