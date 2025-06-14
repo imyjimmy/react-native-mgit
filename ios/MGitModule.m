@@ -1,6 +1,9 @@
 #import "MGitModule.h"
 #import <React/RCTLog.h>
 #import <Foundation/Foundation.h>
+#import <spawn.h>
+#import <sys/wait.h>
+#import <unistd.h>
 
 @implementation MGitModule {
     NSString *_mgitBinaryPath;
@@ -38,14 +41,14 @@ RCT_EXPORT_MODULE();
         return _mgitBinaryPath;
     }
     
-    if (![self setupMgitBinary]) {
+    if (![self setupMgitBinaryInternal]) {
         return nil;
     }
     
     return _mgitBinaryPath;
 }
 
-- (BOOL)setupMgitBinary {
+- (BOOL)setupMgitBinaryInternal {
     if (_binarySetupComplete && _mgitBinaryPath) {
         return YES;
     }
@@ -127,43 +130,136 @@ RCT_EXPORT_MODULE();
         return nil;
     }
     
-    NSTask *task = [[NSTask alloc] init];
-    task.launchPath = binaryPath;
-    task.arguments = arguments;
+    // Prepare arguments for posix_spawn
+    NSMutableArray *allArgs = [NSMutableArray arrayWithObject:@"mgit"];
+    [allArgs addObjectsFromArray:arguments];
     
-    if (workingDir) {
-        task.currentDirectoryPath = workingDir;
+    // Convert NSString arguments to char* array
+    char **argv = malloc(sizeof(char*) * (allArgs.count + 1));
+    for (NSUInteger i = 0; i < allArgs.count; i++) {
+        NSString *arg = allArgs[i];
+        argv[i] = strdup([arg UTF8String]);
     }
+    argv[allArgs.count] = NULL;
     
-    NSPipe *outputPipe = [NSPipe pipe];
-    NSPipe *errorPipe = [NSPipe pipe];
-    task.standardOutput = outputPipe;
-    task.standardError = errorPipe;
+    // Set up environment
+    char **envp = NULL; // Use inherited environment
     
-    NSFileHandle *outputHandle = [outputPipe fileHandleForReading];
-    NSFileHandle *errorHandle = [errorPipe fileHandleForReading];
-    
-    RCTLogInfo(@"Executing mgit: %@ %@", binaryPath, [arguments componentsJoinedByString:@" "]);
-    
-    @try {
-        [task launch];
-        [task waitUntilExit];
-    } @catch (NSException *exception) {
+    // Create pipes for stdout and stderr
+    int stdout_pipe[2], stderr_pipe[2];
+    if (pipe(stdout_pipe) == -1 || pipe(stderr_pipe) == -1) {
         if (error) {
             *error = [NSError errorWithDomain:@"MGitModule" 
                                          code:1002 
-                                     userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to execute mgit: %@", exception.reason]}];
+                                     userInfo:@{NSLocalizedDescriptionKey: @"Failed to create pipes"}];
         }
+        // Clean up allocated memory
+        for (NSUInteger i = 0; i < allArgs.count; i++) {
+            free(argv[i]);
+        }
+        free(argv);
         return nil;
     }
     
-    NSData *outputData = [outputHandle readDataToEndOfFile];
-    NSData *errorData = [errorHandle readDataToEndOfFile];
+    // Set up posix_spawn file actions
+    posix_spawn_file_actions_t file_actions;
+    posix_spawn_file_actions_init(&file_actions);
+    posix_spawn_file_actions_adddup2(&file_actions, stdout_pipe[1], STDOUT_FILENO);
+    posix_spawn_file_actions_adddup2(&file_actions, stderr_pipe[1], STDERR_FILENO);
+    posix_spawn_file_actions_addclose(&file_actions, stdout_pipe[0]);
+    posix_spawn_file_actions_addclose(&file_actions, stdout_pipe[1]);
+    posix_spawn_file_actions_addclose(&file_actions, stderr_pipe[0]);
+    posix_spawn_file_actions_addclose(&file_actions, stderr_pipe[1]);
     
-    NSString *output = [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding] ?: @"";
-    NSString *errorOutput = [[NSString alloc] initWithData:errorData encoding:NSUTF8StringEncoding] ?: @"";
+    // Set up spawn attributes
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
     
-    int exitCode = [task terminationStatus];
+    // Set working directory if provided
+    if (workingDir) {
+        const char *cwd = [workingDir UTF8String];
+        // Note: posix_spawn doesn't have built-in cwd support, we'll chdir temporarily
+    }
+    
+    RCTLogInfo(@"Executing mgit: %@ %@", binaryPath, [arguments componentsJoinedByString:@" "]);
+    
+    // Save current directory if we need to change it
+    char *originalCwd = NULL;
+    if (workingDir) {
+        originalCwd = getcwd(NULL, 0);
+        chdir([workingDir UTF8String]);
+    }
+    
+    // Spawn the process
+    pid_t pid;
+    int spawn_result = posix_spawn(&pid, [binaryPath UTF8String], &file_actions, &attr, argv, envp);
+    
+    // Restore original directory
+    if (workingDir && originalCwd) {
+        chdir(originalCwd);
+        free(originalCwd);
+    }
+    
+    // Close write ends of pipes
+    close(stdout_pipe[1]);
+    close(stderr_pipe[1]);
+    
+    // Clean up spawn attributes and file actions
+    posix_spawn_file_actions_destroy(&file_actions);
+    posix_spawnattr_destroy(&attr);
+    
+    if (spawn_result != 0) {
+        if (error) {
+            *error = [NSError errorWithDomain:@"MGitModule" 
+                                         code:1003 
+                                     userInfo:@{NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Failed to spawn mgit process: %s", strerror(spawn_result)]}];
+        }
+        // Clean up
+        for (NSUInteger i = 0; i < allArgs.count; i++) {
+            free(argv[i]);
+        }
+        free(argv);
+        close(stdout_pipe[0]);
+        close(stderr_pipe[0]);
+        return nil;
+    }
+    
+    // Read stdout and stderr
+    NSMutableData *stdoutData = [NSMutableData data];
+    NSMutableData *stderrData = [NSMutableData data];
+    
+    char buffer[4096];
+    ssize_t bytesRead;
+    
+    // Read stdout
+    while ((bytesRead = read(stdout_pipe[0], buffer, sizeof(buffer))) > 0) {
+        [stdoutData appendBytes:buffer length:bytesRead];
+    }
+    
+    // Read stderr  
+    while ((bytesRead = read(stderr_pipe[0], buffer, sizeof(buffer))) > 0) {
+        [stderrData appendBytes:buffer length:bytesRead];
+    }
+    
+    // Close read ends of pipes
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+    
+    // Wait for process to complete
+    int status;
+    waitpid(pid, &status, 0);
+    
+    int exitCode = WEXITSTATUS(status);
+    
+    // Convert output to strings
+    NSString *output = [[NSString alloc] initWithData:stdoutData encoding:NSUTF8StringEncoding] ?: @"";
+    NSString *errorOutput = [[NSString alloc] initWithData:stderrData encoding:NSUTF8StringEncoding] ?: @"";
+    
+    // Clean up allocated memory
+    for (NSUInteger i = 0; i < allArgs.count; i++) {
+        free(argv[i]);
+    }
+    free(argv);
     
     return @{
         @"exitCode": @(exitCode),
@@ -428,6 +524,35 @@ RCT_EXPORT_METHOD(testMCommitHash:(NSString *)repositoryPath
                            stderr:result[@"stderr"] 
                            stdout:result[@"stdout"]];
     }
+}
+
+RCT_EXPORT_METHOD(setupMgitBinary:(RCTPromiseResolveBlock)resolve
+                           reject:(RCTPromiseRejectBlock)reject) {
+    
+    BOOL success = [self setupMgitBinaryInternal];
+    
+    if (success) {
+        resolve(@{
+            @"success": @YES,
+            @"binaryPath": _mgitBinaryPath ?: @"",
+            @"message": @"mgit binary setup successful"
+        });
+    } else {
+        reject(@"SETUP_ERROR", @"Failed to setup mgit binary", nil);
+    }
+}
+
+RCT_EXPORT_METHOD(testMethod:(RCTPromiseResolveBlock)resolve
+                     reject:(RCTPromiseRejectBlock)reject) {
+    resolve(@{
+        @"message": @"Test method works!",
+        @"timestamp": @([[NSDate date] timeIntervalSince1970])
+    });
+}
+
+RCT_EXPORT_METHOD(setupMgitBinarySimple:(RCTPromiseResolveBlock)resolve
+                                 reject:(RCTPromiseRejectBlock)reject) {
+    resolve(@{@"message": @"setup method works"});
 }
 
 @end
