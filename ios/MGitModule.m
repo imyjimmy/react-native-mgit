@@ -37,80 +37,110 @@ RCT_EXPORT_MODULE();
 #pragma mark - Binary Management
 
 - (NSString *)getMgitBinaryPath {
+    RCTLogInfo(@"🔍 getMgitBinaryPath called");
+    
     if (_mgitBinaryPath && _binarySetupComplete) {
+        RCTLogInfo(@"✅ Binary already set up: %@", _mgitBinaryPath);
         return _mgitBinaryPath;
     }
     
+    RCTLogInfo(@"🔧 Setting up mgit binary...");
     if (![self setupMgitBinaryInternal]) {
+        RCTLogError(@"❌ setupMgitBinaryInternal failed");
         return nil;
     }
     
+    RCTLogInfo(@"✅ Binary setup complete: %@", _mgitBinaryPath);
     return _mgitBinaryPath;
 }
 
 - (BOOL)setupMgitBinaryInternal {
     if (_binarySetupComplete && _mgitBinaryPath) {
+        RCTLogInfo(@"✅ Binary already set up, skipping");
         return YES;
     }
     
-    RCTLogInfo(@"Setting up mgit binary...");
+    RCTLogInfo(@"🔧 Setting up mgit binary...");
     
     // Get the resource bundle
     NSBundle *bundle = [NSBundle bundleForClass:[self class]];
+    RCTLogInfo(@"📦 Main bundle: %@", bundle.bundlePath);
+    
     NSBundle *mgitBundle = [NSBundle bundleWithPath:[bundle pathForResource:@"MGitBinaries" ofType:@"bundle"]];
     
     if (!mgitBundle) {
-        RCTLogError(@"MGitBinaries bundle not found");
+        RCTLogError(@"❌ MGitBinaries bundle not found in: %@", bundle.bundlePath);
+        
+        // List available resources for debugging
+        NSArray *resources = [bundle pathsForResourcesOfType:@"bundle" inDirectory:nil];
+        RCTLogInfo(@"📋 Available bundles: %@", resources);
+        
         return NO;
     }
+    
+    RCTLogInfo(@"✅ Found MGitBinaries bundle: %@", mgitBundle.bundlePath);
     
     // Determine which binary to use based on device/simulator
     NSString *binaryName;
     
 #if TARGET_OS_SIMULATOR
     binaryName = @"mgit-ios-simulator";
-    RCTLogInfo(@"Using iOS Simulator binary");
+    RCTLogInfo(@"📱 Using iOS Simulator binary");
 #else
     binaryName = @"mgit-ios-arm64";
-    RCTLogInfo(@"Using iOS Device binary");
+    RCTLogInfo(@"📱 Using iOS Device binary");
 #endif
     
     NSString *bundledBinaryPath = [mgitBundle pathForResource:binaryName ofType:nil];
     if (!bundledBinaryPath) {
-        RCTLogError(@"Binary %@ not found in bundle", binaryName);
+        RCTLogError(@"❌ Binary %@ not found in bundle", binaryName);
+        
+        // List available files in bundle
+        NSArray *bundleContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:mgitBundle.bundlePath error:nil];
+        RCTLogInfo(@"📋 Bundle contents: %@", bundleContents);
+        
         return NO;
     }
+    
+    RCTLogInfo(@"✅ Found bundled binary: %@", bundledBinaryPath);
     
     // Copy binary to app's Documents directory for execution
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString *documentsDirectory = [paths objectAtIndex:0];
     NSString *executablePath = [documentsDirectory stringByAppendingPathComponent:@"mgit"];
     
+    RCTLogInfo(@"📂 Target executable path: %@", executablePath);
+    
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSError *error;
     
     // Remove existing binary if present
     if ([fileManager fileExistsAtPath:executablePath]) {
+        RCTLogInfo(@"🗑️ Removing existing binary");
         [fileManager removeItemAtPath:executablePath error:nil];
     }
     
     // Copy binary to executable location
     if (![fileManager copyItemAtPath:bundledBinaryPath toPath:executablePath error:&error]) {
-        RCTLogError(@"Failed to copy mgit binary: %@", error.localizedDescription);
+        RCTLogError(@"❌ Failed to copy mgit binary: %@", error.localizedDescription);
         return NO;
     }
+    
+    RCTLogInfo(@"✅ Binary copied successfully");
     
     // Make executable
     NSDictionary *attributes = @{NSFilePosixPermissions: @(0755)};
     if (![fileManager setAttributes:attributes ofItemAtPath:executablePath error:&error]) {
-        RCTLogError(@"Failed to make mgit binary executable: %@", error.localizedDescription);
+        RCTLogError(@"❌ Failed to set executable permissions: %@", error.localizedDescription);
         return NO;
     }
+    
+    RCTLogInfo(@"✅ Executable permissions set");
     
     _mgitBinaryPath = executablePath;
     _binarySetupComplete = YES;
     
-    RCTLogInfo(@"mgit binary ready at: %@", executablePath);
+    RCTLogInfo(@"🎉 Binary setup complete: %@", _mgitBinaryPath);
     return YES;
 }
 
@@ -306,7 +336,19 @@ RCT_EXPORT_METHOD(clone:(NSString *)url
                   options:(NSDictionary *)options
                   resolve:(RCTPromiseResolveBlock)resolve
                   reject:(RCTPromiseRejectBlock)reject) {
+    RCTLogInfo(@"🚀 MGit clone starting...");
+    RCTLogInfo(@"📊 URL: %@", url);
+    RCTLogInfo(@"📊 Local path: %@", localPath);
+    RCTLogInfo(@"📊 Options: %@", options);
     
+    NSString *binaryPath = [self getMgitBinaryPath];
+    if (!binaryPath) {
+        RCTLogError(@"❌ Failed to setup mgit binary");
+        reject(@"BINARY_SETUP_ERROR", @"Failed to setup mgit binary", nil);
+        return;
+    }
+    
+    RCTLogInfo(@"✅ Binary path: %@", binaryPath);
     NSMutableArray *args = [NSMutableArray arrayWithObjects:@"clone", nil];
     
     // Add JWT token if provided
@@ -555,4 +597,22 @@ RCT_EXPORT_METHOD(setupMgitBinarySimple:(RCTPromiseResolveBlock)resolve
     resolve(@{@"message": @"setup method works"});
 }
 
+RCT_EXPORT_METHOD(readFile:(NSString *)repoPath 
+                 fileName:(NSString *)fileName
+                 resolver:(RCTPromiseResolveBlock)resolve
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+    NSString *fullPath = [repoPath stringByAppendingPathComponent:fileName];
+    
+    NSError *error;
+    NSString *content = [NSString stringWithContentsOfFile:fullPath 
+                                                  encoding:NSUTF8StringEncoding 
+                                                     error:&error];
+    
+    if (error) {
+        reject(@"READ_ERROR", @"Failed to read file", error);
+    } else {
+        resolve(content);
+    }
+}
 @end
