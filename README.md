@@ -1,281 +1,272 @@
-# Testing react-native-mgit
+# react-native-mgit
 
-The `react-native-mgit` module exposes underlying git operations from libgit2, a C library, so that it lets iOS apps use mgit operations. mgit is "medical" git which lets users commit medical history to a git repo, enabling decentralized self custody medical records.
+A React Native module that integrates MGit (Medical Git) functionality into iOS applications using a Go framework. MGit enables secure, self-custodial medical data management with Nostr public key authentication.
+
+## Overview
+
+`react-native-mgit` bridges MGit's Go implementation with React Native iOS apps through a compiled Go framework (`MGitBridge.xcframework`). This approach provides:
+
+- Direct Go function calls (no binary execution)
+- Full logging visibility for debugging
+- Secure execution within the iOS app sandbox
+- Comprehensive MGit functionality for medical record management
+
+## Architecture
+
+```
+React Native App
+    ↓
+react-native-mgit (Bridge)
+    ↓ 
+MGitBridge.xcframework (Go Framework)
+    ↓
+MGit Go Implementation
+```
 
 ## Prerequisites
 
-Before running the tests, ensure you have:
+- **iOS Development**: Xcode, CocoaPods
+- **Go Development**: Go 1.21+, `gomobile` tool
+- **React Native**: 0.60+ (autolinking support)
+- **MGit Framework**: Pre-built `MGitBridge.xcframework`
 
-1. The `mgit` Go binary installed and available in your PATH
-2. A React Native project with the `react-native-mgit` module installed
-3. A Git repository with at least one commit that you can use for testing
+## Installation
 
-## Setting Up the Test Environment
+### 1. Install the Module
 
-### 1. Install react-native-mgit
-
-Since this is a local module under development and not published to npm yet, you'll need to install it from your local filesystem:
+Since this is a local development module:
 
 ```bash
-# Using npm with absolute path
-npm install --save /path/to/react-native-mgit
-
-# Using npm with relative path
-npm install --save ../react-native-mgit
-
-# Using yarn with absolute path (note the file: prefix)
-yarn add file:/path/to/react-native-mgit
-
-# Using yarn with relative path
+# Using yarn (recommended)
 yarn add file:../react-native-mgit
+
+# Using npm
+npm install --save ../react-native-mgit
 ```
 
-This creates a symlink to your local development directory instead of trying to download the package from npm.
+### 2. iOS Framework Setup
 
-### 2. Link the native module (if using React Native < 0.60)
+The module requires `MGitBridge.xcframework` to be present in `ios/frameworks/`:
 
 ```bash
-react-native link react-native-mgit
+# From react-native-mgit directory
+./copy-mgit-framework.sh
 ```
 
-For React Native >= 0.60, autolinking should handle this for you.
+This copies the framework from `../mgit-ios-bridge/MGitBridge.xcframework` to the correct location.
 
-### 3. Create a test script
+### 3. iOS Project Integration
 
-Create a new file in your project (e.g., `MGitTest.js`) with the following content:
+For React Native 0.60+, autolinking handles most setup. If needed, manually add to your iOS project:
 
-```javascript
-import React, { useState, useEffect } from 'react';
-import { View, Text, Button, ScrollView, StyleSheet } from 'react-native';
-import MGit from 'react-native-mgit';
-import MGitTests from 'react-native-mgit/src/tests/index.test';
-
-const MGitTestScreen = () => {
-  const [testResults, setTestResults] = useState(null);
-  const [testStatus, setTestStatus] = useState('idle');
-  const [error, setError] = useState(null);
-
-  const runTests = async () => {
-    setTestStatus('running');
-    setError(null);
-    try {
-      // Replace these values with your actual test repository
-      const results = await MGitTests.runTests({
-        repositoryPath: '/path/to/your/test/repo',
-        commitHash: 'your-commit-hash',  // e.g., '63a8e0f'
-        nostrPubkey: 'your-nostr-pubkey' // e.g., 'npub1...'
-      });
-      
-      setTestResults(results);
-      setTestStatus('completed');
-    } catch (err) {
-      setError(err.message);
-      setTestStatus('error');
-    }
-  };
-
-  return (
-    <View style={styles.container}>
-      <Text style={styles.title}>MGit Test Suite</Text>
-      
-      <Button 
-        title="Run Hash Comparison Test" 
-        onPress={runTests}
-        disabled={testStatus === 'running'}
-      />
-      
-      <View style={styles.statusContainer}>
-        <Text>Test Status: {testStatus}</Text>
-        {error && <Text style={styles.error}>Error: {error}</Text>}
-      </View>
-      
-      {testResults && (
-        <ScrollView style={styles.resultsContainer}>
-          <Text style={styles.subtitle}>Hash Test Results</Text>
-          <Text>Match: {testResults.hashTest.match ? 'YES ✓' : 'NO ✗'}</Text>
-          <Text>libgit2 hash: {testResults.hashTest.libgit2Hash}</Text>
-          <Text>mgit hash: {testResults.hashTest.mgitCommandHash}</Text>
-          
-          <Text style={styles.subtitle}>MGit Output</Text>
-          <Text>{testResults.hashTest.mgitOutput}</Text>
-        </ScrollView>
-      )}
-    </View>
-  );
-};
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    padding: 16,
-    backgroundColor: '#f5f5f5',
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 16,
-  },
-  subtitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  statusContainer: {
-    marginVertical: 16,
-    padding: 8,
-    backgroundColor: '#fff',
-    borderRadius: 4,
-  },
-  error: {
-    color: 'red',
-    marginTop: 8,
-  },
-  resultsContainer: {
-    flex: 1,
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 4,
-  },
-});
-
-export default MGitTestScreen;
+```ruby
+# ios/Podfile - usually handled automatically
+pod 'react-native-mgit', :path => '../node_modules/react-native-mgit'
 ```
 
-### 4. Add the test screen to your app
+## Framework Development
 
-Import and add the test screen to your app's navigation. For example:
+### Building the Go Framework
 
-```javascript
-import MGitTestScreen from './MGitTest';
+The `MGitBridge.xcframework` is built from the `mgit-ios-bridge` package:
 
-// ... in your navigation code
-<Stack.Screen name="MGitTest" component={MGitTestScreen} />
+```bash
+# In mgit-ios-bridge directory
+go mod tidy
+gomobile bind -target ios -o MGitBridge.xcframework .
 ```
 
-## Running the Tests
+### Updating the Framework
 
-### Command Line Testing
+When MGit functionality changes:
 
-If you prefer to test via command line, you can create a simple test script (e.g., `test-mgit.js`):
+1. Update `mgit-ios-bridge/bridge.go` with new functions
+2. Rebuild framework: `gomobile bind -target ios -o MGitBridge.xcframework .`
+3. Copy to react-native-mgit: `./copy-mgit-framework.sh`
+4. Test in your React Native app
+
+## Usage
+
+### Basic Framework Testing
 
 ```javascript
-const { NativeModules } = require('react-native');
+import { NativeModules } from 'react-native';
+
 const MGitModule = NativeModules.MGitModule;
 
-async function runTests() {
+// Test framework integration
+async function testFramework() {
   try {
-    console.log('Starting MGit hash comparison test...');
+    // Get MGit help text
+    const helpResult = await MGitModule.help();
+    console.log('Help text:', helpResult.helpText);
     
-    const result = await MGitModule.testMCommitHash(
-      '/path/to/your/test/repo',
-      'your-commit-hash',
-      'your-nostr-pubkey'
-    );
+    // Test logging functionality
+    const logResult = await MGitModule.testLogging();
+    console.log('Logging test:', logResult.result);
     
-    console.log('Test results:');
-    console.log('Match:', result.match ? 'YES ✓' : 'NO ✗');
-    console.log('libgit2 hash:', result.libgit2Hash);
-    console.log('mgit hash:', result.mgitCommandHash);
+    // Test basic computation
+    const mathResult = await MGitModule.simpleAdd(2, 2);
+    console.log('2 + 2 =', mathResult.result); // Should be 4
     
-    if (!result.match) {
-      console.warn('WARNING: Hashes do not match!');
-      console.log('mgit output:');
-      console.log(result.mgitOutput);
-    }
   } catch (error) {
-    console.error('Test failed:', error);
+    console.error('Framework test failed:', error);
   }
 }
-
-runTests();
 ```
 
-Then run it with:
+### MGit Service Integration
 
-```bash
-node test-mgit.js
-```
+```javascript
+import MGitService from 'react-native-mgit/src/services/MGitService';
 
-## Test Parameters
-
-For accurate testing, you need to provide:
-
-1. **repositoryPath**: The full path to a Git repository on your device
-2. **commitHash**: A valid Git commit hash in that repository
-3. **nostrPubkey**: A valid Nostr public key to use for hash calculation
-
-## Development Setup
-
-If you're actively developing the `react-native-mgit` module, here are some additional approaches for a smoother workflow:
-
-### Using npm link / yarn link
-
-This creates a symbolic link that allows you to use your local version as if it were installed from npm:
-
-```bash
-# In the react-native-mgit module directory
-cd /path/to/react-native-mgit
-npm link
-# or
-yarn link
-
-# In your React Native project directory
-npm link react-native-mgit
-# or 
-yarn link react-native-mgit
-```
-
-### Watching for changes
-
-If you're making frequent changes to the module, you might want to set up a watch process to rebuild automatically:
-
-```bash
-# In the react-native-mgit directory
-npm install --save-dev nodemon
-```
-
-Then add a watch script to your package.json:
-
-```json
-"scripts": {
-  "watch": "nodemon --watch src --exec 'npm run build'"
+async function testMGitConnection() {
+  try {
+    const isConnected = await MGitService.testConnection();
+    console.log('MGit module connected:', isConnected);
+  } catch (error) {
+    console.error('Connection test failed:', error);
+  }
 }
+```
+
+## Available Methods
+
+### Framework Test Methods
+
+- **`help()`** - Returns MGit help text and usage information
+- **`testLogging()`** - Comprehensive logging test for debugging
+- **`simpleAdd(a, b)`** - Basic arithmetic test (returns a + b)
+
+### MGit Operations (Future)
+
+The following methods are planned for implementation:
+
+- **`clone(url, localPath, options)`** - Clone MGit repositories
+- **`commit(repositoryPath, message, options)`** - Create commits with Nostr signatures
+- **`pull(repositoryPath, options)`** - Pull changes from remote repositories
+- **`createMCommit(...)`** - Create medical commits with enhanced metadata
+
+## Development Workflow
+
+### 1. Framework Development
+
+```bash
+# Work on Go functionality
+cd mgit-ios-bridge
+# Edit bridge.go to add new functions
+gomobile bind -target ios -o MGitBridge.xcframework .
+```
+
+### 2. Integration Testing
+
+```bash
+# Update React Native module
+cd react-native-mgit
+./copy-mgit-framework.sh
+
+# Test in your app
+cd your-app
+npx expo run:ios
+```
+
+### 3. Debugging
+
+#### iOS Logs
+View native logs in Xcode Console (Window > Devices and Simulators > Select Device > Open Console).
+
+#### JavaScript Logs
+```javascript
+// Enable comprehensive logging
+const result = await MGitModule.testLogging();
+// Check both console.log and Xcode Console for output
+```
+
+## Project Structure
+
+```
+react-native-mgit/
+├── ios/
+│   ├── MGitModule.h               # Native module header
+│   ├── MGitModule.m               # Native module implementation
+│   └── frameworks/                # Framework location
+│       └── MGitBridge.xcframework # Go framework
+├── src/
+│   └── services/
+│       └── MGitService.ts         # JavaScript service layer
+├── copy-mgit-framework.sh         # Framework update script
+├── react-native-mgit.podspec      # iOS dependency configuration
+└── package.json
 ```
 
 ## Troubleshooting
 
-If the tests fail, check:
+### Common Issues
 
-1. **mgit binary**: Ensure the `mgit` binary is in your PATH by running `which mgit`
-2. **Repository access**: Make sure the test has access to read the specified repository
-3. **iOS permissions**: If testing on iOS, check if the app has file system permissions
-4. **mgit output**: Look at the actual output returned from the mgit command to verify it's in the expected format
-5. **Module installation**: Verify that your local module is correctly linked by checking the `node_modules/react-native-mgit` directory
+**Framework not found:**
+```bash
+# Ensure framework is in correct location
+ls ios/frameworks/MGitBridge.xcframework
 
-## iOS-Specific Notes
+# If missing, copy from mgit-ios-bridge
+./copy-mgit-framework.sh
+```
 
-For iOS, the module accesses the file system directly via libgit2 and runs shell commands. To test properly on iOS devices:
+**Build errors:**
+```bash
+# Clean build
+cd ios && rm -rf build/ Pods/ Podfile.lock
+cd .. && npx expo run:ios
+```
 
-1. Use a repository within the app sandbox or a shared container directory
-2. If testing on a real device, you may need to adjust permissions
-3. For optimal testing, use a simulator which has fewer restrictions
+**No native logs:**
+- Check Xcode Console (not Simulator console)
+- Filter by "MGitModule" or "MedicalBinder"
+- Ensure device/simulator is selected in Console app
 
-## Log Collection
+### Verification Steps
 
-To collect more detailed logs for troubleshooting, add this function to your test code:
+1. **Module loads**: `NativeModules.MGitModule` should not be undefined
+2. **Framework works**: `await MGitModule.help()` should return help text
+3. **Logging visible**: Check Xcode Console for "MGitModule:" messages
+
+## Contributing
+
+### Adding New MGit Functions
+
+1. **Go side**: Add function to `mgit-ios-bridge/bridge.go`
+2. **Framework**: Rebuild with `gomobile bind`
+3. **Native side**: Add RCT_EXPORT_METHOD to `MGitModule.m`
+4. **JavaScript side**: Add method to `MGitService.ts`
+5. **Test**: Verify end-to-end functionality
+
+### Testing
 
 ```javascript
-function collectLogs(repositoryPath, commitHash) {
-  return new Promise((resolve, reject) => {
-    const { exec } = require('child_process');
-    exec(`mgit show ${commitHash}`, {cwd: repositoryPath}, (error, stdout, stderr) => {
-      if (error) {
-        reject({error, stderr});
-        return;
-      }
-      resolve({stdout, stderr});
-    });
-  });
+// Template for testing new methods
+async function testNewMethod() {
+  try {
+    const result = await MGitModule.yourNewMethod(params);
+    console.log('Success:', result);
+  } catch (error) {
+    console.error('Error:', error);
+  }
 }
 ```
+
+## Requirements
+
+- **iOS**: 11.0+
+- **React Native**: 0.60+
+- **Go**: 1.21+ (for framework development)
+- **Xcode**: Latest stable version
+
+## License
+
+[Add your license information here]
+
+## Related Projects
+
+- **MGit**: Core Git implementation for medical records
+- **mgit-ios-bridge**: Go package providing iOS framework
+- **MedicalBinder**: Reference React Native app using this module
