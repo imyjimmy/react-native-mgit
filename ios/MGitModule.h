@@ -1,5 +1,5 @@
 #import <React/RCTBridgeModule.h>
 #import <React/RCTEventEmitter.h>
 
-@interface MGitModule : NSObject <RCTBridgeModule>
+@interface MGitModule : RCTEventEmitter <RCTBridgeModule>
 @end
