@@ -14,10 +14,8 @@ Pod::Spec.new do |s|
   # Native source files - relative to podspec directory
   s.source_files = "ios/MGitModule.{h,m}"
 
-  # Bundle mgit binaries as resources - relative to podspec directory  
-  s.resource_bundles = {
-    'MGitBinaries' => ['ios/binaries/*']
-  }
+  # Include mgit binaries directly as app resources - relative to podspec directory  
+  s.resources = ['ios/binaries/*']
 
   # React Native dependency (libgit2 dependency removed!)
   s.dependency "React-Core"

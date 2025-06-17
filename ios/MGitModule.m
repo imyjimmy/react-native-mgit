@@ -62,24 +62,6 @@ RCT_EXPORT_MODULE();
     
     RCTLogInfo(@"🔧 Setting up mgit binary...");
     
-    // Get the resource bundle
-    NSBundle *bundle = [NSBundle bundleForClass:[self class]];
-    RCTLogInfo(@"📦 Main bundle: %@", bundle.bundlePath);
-    
-    NSBundle *mgitBundle = [NSBundle bundleWithPath:[bundle pathForResource:@"MGitBinaries" ofType:@"bundle"]];
-    
-    if (!mgitBundle) {
-        RCTLogError(@"❌ MGitBinaries bundle not found in: %@", bundle.bundlePath);
-        
-        // List available resources for debugging
-        NSArray *resources = [bundle pathsForResourcesOfType:@"bundle" inDirectory:nil];
-        RCTLogInfo(@"📋 Available bundles: %@", resources);
-        
-        return NO;
-    }
-    
-    RCTLogInfo(@"✅ Found MGitBinaries bundle: %@", mgitBundle.bundlePath);
-    
     // Determine which binary to use based on device/simulator
     NSString *binaryName;
     
@@ -91,33 +73,40 @@ RCT_EXPORT_MODULE();
     RCTLogInfo(@"📱 Using iOS Device binary");
 #endif
     
-    NSString *bundledBinaryPath = [mgitBundle pathForResource:binaryName ofType:nil];
+    // Get binary directly from main app bundle (no separate resource bundle)
+    NSBundle *bundle = [NSBundle mainBundle];
+    NSString *bundledBinaryPath = [bundle pathForResource:binaryName ofType:nil];
+    
     if (!bundledBinaryPath) {
-        RCTLogError(@"❌ Binary %@ not found in bundle", binaryName);
+        RCTLogError(@"❌ Binary %@ not found in main bundle: %@", binaryName, bundle.bundlePath);
         
-        // List available files in bundle
-        NSArray *bundleContents = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:mgitBundle.bundlePath error:nil];
-        RCTLogInfo(@"📋 Bundle contents: %@", bundleContents);
+        // List available resources for debugging
+        NSArray *allResources = [bundle pathsForResourcesOfType:nil inDirectory:nil];
+        NSMutableArray *mgitResources = [NSMutableArray array];
+        for (NSString *resource in allResources) {
+            if ([resource.lastPathComponent containsString:@"mgit"]) {
+                [mgitResources addObject:resource];
+            }
+        }
+        RCTLogInfo(@"📋 Available mgit-related resources: %@", mgitResources);
         
         return NO;
     }
     
-    RCTLogInfo(@"✅ Found bundled binary: %@", bundledBinaryPath);
+    RCTLogInfo(@"✅ Found binary in bundle: %@", bundledBinaryPath);
     
     // Copy binary to app's Documents directory for execution
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
     NSString *documentsDirectory = [paths objectAtIndex:0];
     NSString *executablePath = [documentsDirectory stringByAppendingPathComponent:@"mgit"];
     
-    RCTLogInfo(@"📂 Target executable path: %@", executablePath);
-    
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSError *error;
     
     // Remove existing binary if present
     if ([fileManager fileExistsAtPath:executablePath]) {
-        RCTLogInfo(@"🗑️ Removing existing binary");
         [fileManager removeItemAtPath:executablePath error:nil];
+        RCTLogInfo(@"🗑️ Removed existing binary");
     }
     
     // Copy binary to executable location
@@ -126,7 +115,7 @@ RCT_EXPORT_MODULE();
         return NO;
     }
     
-    RCTLogInfo(@"✅ Binary copied successfully");
+    RCTLogInfo(@"📋 Copied binary to: %@", executablePath);
     
     // Make executable
     NSDictionary *attributes = @{NSFilePosixPermissions: @(0755)};
@@ -135,12 +124,12 @@ RCT_EXPORT_MODULE();
         return NO;
     }
     
-    RCTLogInfo(@"✅ Executable permissions set");
+    RCTLogInfo(@"✅ Set executable permissions");
     
     _mgitBinaryPath = executablePath;
     _binarySetupComplete = YES;
     
-    RCTLogInfo(@"🎉 Binary setup complete: %@", _mgitBinaryPath);
+    RCTLogInfo(@"🎉 MGit binary setup complete: %@", _mgitBinaryPath);
     return YES;
 }
 
@@ -382,6 +371,54 @@ RCT_EXPORT_METHOD(clone:(NSString *)url
     }
 }
 
+RCT_EXPORT_METHOD(mockClone:(NSString *)url
+                  localPath:(NSString *)localPath
+                  options:(NSDictionary *)options
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
+    
+    // // Just create a fake success response
+    // RCTLogInfo(@"🎭 Mock clone: %@ -> %@", url, localPath);
+    
+    // // Create the directory structure to simulate a real clone
+    // NSFileManager *fileManager = [NSFileManager defaultManager];
+    // NSError *error;
+    
+    // if (![fileManager createDirectoryAtPath:localPath 
+    //             withIntermediateDirectories:YES 
+    //                              attributes:nil 
+    //                                   error:&error]) {
+    //     reject(@"MOCK_ERROR", @"Failed to create mock directory", error);
+    //     return;
+    // }
+    
+    // // Create a fake README file
+    // NSString *readmePath = [localPath stringByAppendingPathComponent:@"README.md"];
+    // NSString *content = @"# Mock Medical Records\nThis is a simulated clone for testing.";
+    // [content writeToFile:readmePath 
+    //           atomically:YES 
+    //             encoding:NSUTF8StringEncoding 
+    //                error:nil];
+    
+    // resolve(@{
+    //     @"success": @YES,
+    //     @"output": @"Mock clone completed successfully",
+    //     @"path": localPath
+    // });
+    /* ABOVE: SUCCESS CASE */
+
+    // VERY obvious logs that should show up
+    NSLog(@"🎭🎭🎭 MOCK CLONE METHOD CALLED 🎭🎭🎭");
+    RCTLogError(@"🎭🎭🎭 MOCK CLONE ERROR LOG 🎭🎭🎭");
+    
+    NSLog(@"URL: %@", url);
+    NSLog(@"Path: %@", localPath);
+    NSLog(@"Options: %@", options);
+    
+    // Always reject with a obvious message for testing
+    reject(@"MOCK_TEST", @"This is the mock method being called!", nil);
+}
+
 RCT_EXPORT_METHOD(pull:(NSString *)repositoryPath
                   options:(NSDictionary *)options
                   resolve:(RCTPromiseResolveBlock)resolve
@@ -494,6 +531,56 @@ RCT_EXPORT_METHOD(createMCommit:(NSString *)repositoryPath
                          exitCode:exitCode 
                            stderr:result[@"stderr"] 
                            stdout:result[@"stdout"]];
+    }
+}
+
+RCT_EXPORT_METHOD(help:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
+    
+    RCTLogInfo(@"[MGit] Starting help command test...");
+    NSLog(@"[MGit] NSLog test - help method called");
+    
+    NSArray *args = @[@"help"];
+    
+    NSError *error;
+    NSDictionary *result = [self executeMgitCommand:args workingDir:nil error:&error];
+    
+    if (error) {
+        RCTLogError(@"[MGit] Help command failed with error: %@", error);
+        NSLog(@"[MGit] NSLog ERROR - help failed: %@", error);
+        reject(@"SETUP_ERROR", @"Failed to setup mgit binary", error);
+        return;
+    }
+    
+    int exitCode = [result[@"exitCode"] intValue];
+    NSString *stdout = result[@"stdout"] ?: @"";
+    NSString *stderr = result[@"stderr"] ?: @"";
+    
+    RCTLogInfo(@"[MGit] Help exit code: %d", exitCode);
+    RCTLogInfo(@"[MGit] Help stdout length: %lu", (unsigned long)stdout.length);
+    NSLog(@"[MGit] NSLog - stdout preview: %@", [stdout substringToIndex:MIN(100, stdout.length)]);
+    
+    if (exitCode == 0) {
+        // Get first 100 characters for preview
+        NSString *preview = stdout.length > 100 ? 
+            [[stdout substringToIndex:100] stringByAppendingString:@"..."] : 
+            stdout;
+            
+        resolve(@{
+            @"success": @YES,
+            @"output": stdout,           // Full output
+            @"preview": preview,         // First 100 chars
+            @"outputLength": @(stdout.length),
+            @"version": @"MGit v1.0.0",
+            @"testMath": @(2 + 2),
+            @"logTest": @"All logging methods tested"
+        });
+    } else {
+        RCTLogError(@"[MGit] Help command non-zero exit: %d", exitCode);
+        [self rejectWithMgitError:reject 
+                         exitCode:exitCode 
+                           stderr:stderr 
+                           stdout:stdout];
     }
 }
 

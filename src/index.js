@@ -99,6 +99,14 @@ class MGit {
     return MGitModule.showMGitCommit(repositoryPath, commitRef);
   }
 
+  /**
+   * Get help information and test binary functionality
+   * @returns {Promise<Object>} - Resolves with help information and test results
+   */
+  static help() {
+    return MGitModule.help();
+  }
+
   // Add a method for viewing MGit commit log
   static log(repositoryPath, options = {}) {
     return MGitModule.mgitLog(repositoryPath, options);
