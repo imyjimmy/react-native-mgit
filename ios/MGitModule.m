@@ -30,7 +30,7 @@ RCT_EXPORT_METHOD(help:(RCTPromiseResolveBlock)resolve
     
     @try {
         // Call the Go framework directly
-        NSString *helpText = MgitiosbridgeHelp();
+        NSString *helpText = MGitBridgeHelp();
         
         RCTLogInfo(@"MGitModule: help() succeeded, length: %lu", (unsigned long)[helpText length]);
         NSLog(@"MGitModule: help() succeeded, length: %lu", (unsigned long)[helpText length]);
@@ -59,7 +59,7 @@ RCT_EXPORT_METHOD(testLogging:(RCTPromiseResolveBlock)resolve
     
     @try {
         // Call the Go framework test logging function
-        NSString *result = MgitiosbridgeTestLogging();
+        NSString *result = MGitBridgeTestLogging();
         
         RCTLogInfo(@"MGitModule: testLogging() succeeded");
         NSLog(@"MGitModule: testLogging() succeeded");
@@ -90,7 +90,7 @@ RCT_EXPORT_METHOD(simpleAdd:(int)a
     
     @try {
         // Call the Go framework simple add function
-        long result = MgitiosbridgeSimpleAdd(a, b);
+        long result = MGitBridgeSimpleAdd(a, b);
         
         RCTLogInfo(@"MGitModule: simpleAdd() succeeded, result: %ld", result);
         NSLog(@"MGitModule: simpleAdd() succeeded, result: %ld", result);
@@ -111,17 +111,6 @@ RCT_EXPORT_METHOD(simpleAdd:(int)a
     }
 }
 
-// Keep the old clone method for backwards compatibility, but mark it deprecated
-RCT_EXPORT_METHOD(clone:(NSString *)url
-                  localPath:(NSString *)localPath
-                  options:(NSDictionary *)options
-                  resolve:(RCTPromiseResolveBlock)resolve
-                  reject:(RCTPromiseRejectBlock)reject) {
-    
-    RCTLogError(@"MGitModule: clone() method not yet implemented with framework");
-    reject(@"NOT_IMPLEMENTED", @"Clone method not yet implemented with Go framework", nil);
-}
-
 // Keep the old pull method for backwards compatibility, but mark it deprecated  
 RCT_EXPORT_METHOD(pull:(NSString *)repositoryPath
                   options:(NSDictionary *)options
@@ -132,4 +121,29 @@ RCT_EXPORT_METHOD(pull:(NSString *)repositoryPath
     reject(@"NOT_IMPLEMENTED", @"Pull method not yet implemented with Go framework", nil);
 }
 
+RCT_EXPORT_METHOD(clone:(NSString *)url 
+                 localPath:(NSString *)localPath 
+                 token:(NSString *)token 
+                 resolver:(RCTPromiseResolveBlock)resolve 
+                 rejecter:(RCTPromiseRejectBlock)reject)
+{
+    NSLog(@"MGitModule: clone() called with URL: %@, path: %@", url, @"***");
+    
+    // Call the framework
+    MGitbridgeCloneResult *result = MGitBridgeClone(url, localPath, token);
+    
+    if (result.success) {
+        NSDictionary *response = @{
+            @"success": @(result.success),
+            @"message": result.message ?: @"",
+            @"repoID": result.repoID ?: @"",
+            @"repoName": result.repoName ?: @"",
+            @"localPath": result.localPath ?: @""
+        };
+        resolve(response);
+    } else {
+        NSString *errorMessage = result.message ?: @"Clone operation failed";
+        reject(@"CLONE_ERROR", errorMessage, nil);
+    }
+}
 @end
