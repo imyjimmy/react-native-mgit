@@ -130,7 +130,7 @@ RCT_EXPORT_METHOD(clone:(NSString *)url
     NSLog(@"MGitModule: clone() called with URL: %@, path: %@", url, @"***");
     
     // Call the framework
-    MGitbridgeCloneResult *result = MGitBridgeClone(url, localPath, token);
+    MGitBridgeCloneResult *result = MGitBridgeClone(url, localPath, token);
     
     if (result.success) {
         NSDictionary *response = @{
