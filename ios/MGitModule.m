@@ -146,4 +146,73 @@ RCT_EXPORT_METHOD(clone:(NSString *)url
         reject(@"CLONE_ERROR", errorMessage, nil);
     }
 }
+
+RCT_EXPORT_METHOD(commit:(NSString *)repoPath
+                  message:(NSString *)message
+                  authorName:(NSString *)authorName
+                  authorEmail:(NSString *)authorEmail
+                  nostrPubkey:(NSString *)nostrPubkey
+                  resolve:(RCTPromiseResolveBlock)resolve
+                  reject:(RCTPromiseRejectBlock)reject) {
+    
+    RCTLogInfo(@"MGitModule: commit() called for repo: %@", repoPath);
+    NSLog(@"MGitModule: commit() called for repo: %@", repoPath);
+    
+    @try {
+        // Call the Go framework commit function
+        MGitBridgeCommitResult *result = MGitBridgeCommit(repoPath, message, authorName, authorEmail, nostrPubkey);
+        
+        if (result.success) {
+            RCTLogInfo(@"MGitModule: commit() succeeded, MGit hash: %@", result.mGitHash);
+            NSLog(@"MGitModule: commit() succeeded, MGit hash: %@", result.mGitHash);
+            
+            resolve(@{
+                @"success": @YES,
+                @"message": result.message,
+                @"mGitHash": result.mGitHash,
+                @"gitHash": result.gitHash,
+                @"commitMsg": result.commitMsg
+            });
+        } else {
+            RCTLogError(@"MGitModule: commit() failed: %@", result.message);
+            NSLog(@"MGitModule: commit() failed: %@", result.message);
+            
+            reject(@"COMMIT_FAILED", result.message, nil);
+        }
+        
+    } @catch (NSException *exception) {
+        RCTLogError(@"MGitModule: commit() failed with exception: %@", exception.reason);
+        NSLog(@"MGitModule: commit() failed with exception: %@", exception.reason);
+        
+        reject(@"FRAMEWORK_ERROR", 
+               [NSString stringWithFormat:@"Failed to call Go framework: %@", exception.reason], 
+               nil);
+    }
+}
+
+RCT_EXPORT_METHOD(push:(NSString *)repoPath
+                  token:(NSString *)token
+                  resolver:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+    @try {
+      // Call the Go bridge Push function
+      NSLog(@"MGitModule: push(), token: %@", token);
+      MGitBridgePushResult *result = MGitBridgePush(repoPath, token);
+      
+      // Convert result to JavaScript object with all three fields
+      NSDictionary *response = @{
+        @"success": @(result.success),
+        @"message": result.message ?: @"",
+        @"commitHash": result.commitHash ?: @""
+      };
+      
+      resolve(response);
+    } @catch (NSException *exception) {
+      reject(@"PUSH_ERROR", exception.reason, nil);
+    }
+  });
+}
+
 @end
