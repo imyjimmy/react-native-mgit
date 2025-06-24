@@ -111,6 +111,44 @@ RCT_EXPORT_METHOD(simpleAdd:(int)a
     }
 }
 
+RCT_EXPORT_METHOD(add:(NSString *)repoPath 
+                 filePaths:(NSString *)filePaths
+                 resolve:(RCTPromiseResolveBlock)resolve 
+                 reject:(RCTPromiseRejectBlock)reject) {
+    
+    RCTLogInfo(@"MGitModule: add(%@, %@) called", repoPath, filePaths);
+    NSLog(@"MGitModule: add(%@, %@) called", repoPath, filePaths);
+    
+    @try {
+        // Call the Go framework Add function
+        MgitiosbridgeAddResult *result = MgitiosbridgeAdd(repoPath, filePaths);
+        
+        if (result.success) {
+            RCTLogInfo(@"MGitModule: add() succeeded: %@", result.message);
+            NSLog(@"MGitModule: add() succeeded: %@", result.message);
+            
+            resolve(@{
+                @"success": @YES,
+                @"message": result.message,
+                @"source": @"framework"
+            });
+        } else {
+            RCTLogError(@"MGitModule: add() failed: %@", result.error);
+            NSLog(@"MGitModule: add() failed: %@", result.error);
+            
+            reject(@"ADD_FAILED", result.error, nil);
+        }
+        
+    } @catch (NSException *exception) {
+        RCTLogError(@"MGitModule: add() failed with exception: %@", exception.reason);
+        NSLog(@"MGitModule: add() failed with exception: %@", exception.reason);
+        
+        reject(@"FRAMEWORK_ERROR", 
+               [NSString stringWithFormat:@"Failed to call Go framework: %@", exception.reason], 
+               nil);
+    }
+}
+
 // Keep the old pull method for backwards compatibility, but mark it deprecated  
 RCT_EXPORT_METHOD(pull:(NSString *)repositoryPath
                   options:(NSDictionary *)options
