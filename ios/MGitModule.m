@@ -121,7 +121,7 @@ RCT_EXPORT_METHOD(add:(NSString *)repoPath
     
     @try {
         // Call the Go framework Add function
-        MgitiosbridgeAddResult *result = MgitiosbridgeAdd(repoPath, filePaths);
+         MGitBridgeAddResult *result = MGitBridgeAdd(repoPath, filePaths);
         
         if (result.success) {
             RCTLogInfo(@"MGitModule: add() succeeded: %@", result.message);
